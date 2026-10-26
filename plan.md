@@ -37,6 +37,8 @@ skills/
 
 **Готово, когда:** Pi видит корректное описание скилла, может выбрать его по задаче и получить из него точную команду запуска runner.
 
+**Статус: выполнено.** Добавлен самостоятельный `skills/subtask4llm-pi/SKILL.md` с выбором workflow, планированием, командами запуска для macOS/Linux и Windows, требованиями к Pi/provider и описанием разрешений.
+
 ### 2. Реализовать самостоятельный Pi-runner
 
 Создать `skills/subtask4llm-pi/scripts/run_workflow.py`. Взять за контракт текущий JSON-план версии 1 и формат результата шага из Codex-скилла, но не импортировать его код и не вызывать `codex`.
@@ -56,6 +58,8 @@ Runner должен:
 
 **Готово, когда:** корректный dry-run показывает порядок шагов и итоговые параметры запуска без вызова Pi; рабочий запуск корректно принимает только валидный результат и останавливает workflow по ошибке после настроенного повтора.
 
+**Статус: выполнено.** Самостоятельный runner добавлен; его dry-run, выполнение с fake Pi, проверки результата, повторы, timeout, recursion guard и артефакты проверены.
+
 ### 3. Добавить формат плана и инструкции для запуска
 
 Создать `skills/subtask4llm-pi/references/plan-format.md`, перенеся описание JSON-плана версии 1 и добавив Pi-команду запуска и dry-run. Команды должны использовать `python3` на macOS/Linux и `py -3` на Windows, как в текущей документации.
@@ -63,6 +67,8 @@ Runner должен:
 Обновить корневой `README.md`: добавить установку `subtask4llm-pi` через Skills CLI с `--agent pi`, не меняя существующую Codex-команду. Сверить перед реализацией, что текущая версия Skills CLI по-прежнему поддерживает цель `pi` и Pi обнаруживает проектный `.agents/skills/`.
 
 **Готово, когда:** обе команды установки, Codex и Pi, представлены в README, а отдельный формат-план объясняет использование и ограничения Pi-runner.
+
+**Статус: выполнено.** Добавлен формат плана Pi и команда независимой установки в README; существующая команда Codex сохранена.
 
 ### 4. Покрыть поведение Pi-runner и проверить независимость скиллов
 
@@ -72,6 +78,8 @@ Runner должен:
 
 **Готово, когда:** тесты используют только mock Pi, Codex-скилл остаётся без регрессий, а Pi-команда установки указывает на правильный скилл.
 
+**Статус: выполнено.** Все 15 тестов Pi-runner прошли. Один из 13 тестов Codex завершается с ошибкой, которая также воспроизводится на чистом `HEAD`; Codex-файлы в этой работе не менялись.
+
 ## Справочные материалы
 
 - [Pi Skills](https://pi.dev/docs/latest/skills) — формат `SKILL.md`, обнаружение, вызов и расположение скиллов.
@@ -79,3 +87,12 @@ Runner должен:
 - [Pi Command Line](https://pi.dev/docs/latest/cli) — флаги CLI, включая `--model`, `--no-session`, `--no-skills` и `--no-approve`.
 - [Skills CLI: supported agents](https://github.com/vercel-labs/skills/blob/main/docs/agents.md) — агент `pi` и его директории установки.
 - [Skills CLI reference](https://github.com/vercel-labs/skills/blob/main/docs/commands.md) — параметры `skills add`, `--skill` и `--agent`.
+
+## Фактически выполнено
+
+- Добавлен самостоятельный Pi skill, runner без зависимости от Codex-кода, формат плана версии 1 и тесты с fake Pi; README дополнен командой установки `subtask4llm-pi` для Pi.
+- Изменены `README.md`, `plan.md`; добавлены `skills/subtask4llm-pi/SKILL.md`, `skills/subtask4llm-pi/scripts/run_workflow.py`, `skills/subtask4llm-pi/references/plan-format.md`, `skills/subtask4llm-pi/tests/test_run_workflow.py`.
+- `python3 -m unittest discover -s skills/subtask4llm-pi/tests -v` — успешно, 15 тестов; `python3 -m py_compile skills/subtask4llm-pi/scripts/run_workflow.py` — успешно.
+- `python3 -m unittest discover -s skills/subtask4llm-codex/tests -v` — 12 из 13 тестов успешно. `test_retries_once_then_stops_before_later_steps` ожидает отсутствия `LATER_TASK_MARKER` в prompt, но runner включает весь workflow map. Тот же сбой подтверждён повторным запуском тестов на чистом `HEAD`; Codex-файлы в этой работе не менялись.
+- Ручная проверка Pi в изолированном временном проекте (`.agents/skills/subtask4llm-pi` указывает на новый skill): `pi --approve --print --no-session --no-mcp --tools read,grep,find,ls` с командой `/skill:subtask4llm-pi`. Pi обнаружил skill и вернул его имя и Linux-команду запуска; инструменты записи и запуска команд были отключены, workflow не запускался и файлы не редактировались.
+- Ограничение: fake-Pi suite проверяет взаимодействие runner с CLI без реального запуска worker-модели; ручной smoke test проверил discovery и вызов skill, но не выполнение runner через Pi.
