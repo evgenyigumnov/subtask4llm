@@ -1,0 +1,4 @@
+interface:
+  display_name: "Subtask4LLM"
+  short_description: "Run sequential Codex workers safely"
+  default_prompt: "Use $subtask4llm-codex to execute this multi-step coding task with isolated sequential workers."
