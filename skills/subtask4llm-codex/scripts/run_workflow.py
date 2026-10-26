@@ -271,18 +271,17 @@ def child_environment(base: Mapping[str, str] | None = None) -> dict[str, str]:
 def build_command(
     *,
     codex_bin: str,
-    model: str,
+    model: str | None,
     workspace: Path,
     schema_path: Path,
     output_path: Path,
     skill_manifest: Path,
 ) -> list[str]:
     """Build an argv list; no shell parsing is involved."""
-    return [
-        codex_bin,
-        "exec",
-        "--model",
-        model,
+    command = [codex_bin, "exec"]
+    if model:
+        command.extend(["--model", model])
+    command.extend([
         "--yolo",
         "--cd",
         str(workspace),
@@ -302,7 +301,8 @@ def build_command(
         "--config",
         'shell_environment_policy.set.CODEX_WORKFLOW_DEPTH="1"',
         "-",
-    ]
+    ])
+    return command
 
 
 # Friendly alias for callers/tests.
@@ -570,7 +570,7 @@ def dry_run_report(
     *,
     plan: Plan,
     codex_bin: str,
-    model: str,
+    model: str | None,
     workspace: Path,
     skill_manifest: Path,
 ) -> dict[str, Any]:
@@ -590,6 +590,7 @@ def dry_run_report(
     return {
         "status": "dry-run",
         "goal": plan.goal,
+        "model": model or "Codex CLI configured default",
         "step_count": len(plan.steps),
         "recursion_guard": {
             "environment": {"CODEX_WORKFLOW_CHILD": "1", "CODEX_WORKFLOW_DEPTH": "1"},
@@ -603,7 +604,7 @@ def run_workflow(
     *,
     plan: Plan,
     codex_bin: str,
-    model: str,
+    model: str | None,
     workspace: Path,
     timeout_seconds: int,
     retries: int,
@@ -722,7 +723,10 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("plan", help="JSON plan path, or - to read it from stdin")
     result.add_argument("--workspace", default=".", help="shared worker workspace")
-    result.add_argument("--model", help="worker model (or set CODEX_WORKFLOW_MODEL)")
+    result.add_argument(
+        "--model",
+        help="worker model (default: Codex CLI configured model; can also use CODEX_WORKFLOW_MODEL)",
+    )
     result.add_argument("--timeout-seconds", type=int, default=1_800)
     result.add_argument("--retries", type=int, choices=(0, 1), default=1)
     result.add_argument(
@@ -753,11 +757,9 @@ def _resolve_workspace(raw_path: str) -> Path:
     return workspace
 
 
-def _resolve_model(cli_model: str | None) -> str:
+def _resolve_model(cli_model: str | None) -> str | None:
     model = cli_model or os.environ.get("CODEX_WORKFLOW_MODEL")
-    if not model or not model.strip():
-        raise WorkflowError("a worker model is required via --model or CODEX_WORKFLOW_MODEL")
-    return model.strip()
+    return model.strip() if model and model.strip() else None
 
 
 def _validate_executable(codex_bin: str) -> None:

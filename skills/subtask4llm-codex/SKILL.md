@@ -12,15 +12,23 @@ Use the current Codex as the planner and reviewer. Delegate implementation steps
 1. Confirm this is a multi-step task whose ordered handoffs justify separate contexts. Do not decompose a small change merely to use the skill.
 2. Inspect the repository and convert the authorized work into 2–10 concrete steps. Each step must have a bounded task, observable acceptance criteria, and only earlier steps as dependencies. Treat each worker as having no access to the planner's conversation: put relevant user requirements, decisions, repository findings, file paths, architecture, constraints, edge cases, and implementation guidance into the plan. Use shared `context` for information that applies across steps and each step's `context` for details specific to that step. Include enough detail that the worker can act without guessing; do not rely on unstated conversation context.
 3. Read [references/plan-format.md](references/plan-format.md), create a version 1 JSON plan in a temporary location, and validate it with `--dry-run` before execution.
-4. Use the current Codex session's model for workers by default, and pass it with `--model`. Choose a different worker model only when the user explicitly requests one or has stated a cost/quality preference that calls for it. Do not upgrade to a stronger model based on your own judgment. If the current model cannot be determined, ask instead of guessing. `CODEX_WORKFLOW_MODEL` may be used when the user has explicitly configured a worker model.
-5. Before launching any worker, show the user the plan in a concise, readable form in the conversation: the goal and the ordered list of step titles with a short description and dependencies. Then launch the workflow immediately; do not wait for confirmation. The user can interrupt it or send a follow-up comment while it runs.
+4. Use the current Codex session's model for workers by default, and pass it with `--model` when its exact ID is available. Honor `CODEX_WORKFLOW_MODEL` when the user has explicitly configured it. If neither is available, omit `--model`; Codex CLI will use its configured model. Do not ask the user to choose a model and do not guess a model ID. Choose a different worker model only when the user explicitly requests one or has stated a cost/quality preference that calls for it. Do not upgrade to a stronger model based on your own judgment.
+5. Before launching any worker, show the user the plan in a concise, readable form in the conversation: the goal and the ordered list of step titles with a short description and dependencies. Then launch the workflow immediately; do not wait for confirmation. The user can interrupt it or send a follow-up comment while it runs. The current Codex is the planner and reviewer, not an implementation worker: do not edit target source files. It may create only the temporary JSON plan needed to launch the workflow. If a genuinely required detail blocks the plan, ask one concise question and stop; do not make implementation edits while awaiting an answer.
 6. Run the orchestrator from the target repository:
 
+   On macOS or Linux, run:
+
    ```bash
-   python3 <skill-path>/scripts/run_workflow.py <plan.json> \
-     --workspace <repository> \
-     --model <worker-model>
+   python3 <skill-path>/scripts/run_workflow.py <plan.json> --workspace <repository>
    ```
+
+   On Windows PowerShell, run:
+
+   ```powershell
+   py -3 <skill-path>\scripts\run_workflow.py <plan.json> --workspace <repository>
+   ```
+
+   Omit `--model` to use the model configured for Codex CLI. Add `--model <worker-model>` only when the model ID is known and should override that configuration.
 
    Add `--artifacts-dir <directory>` only when persistent prompts and diagnostics are useful. Those artifacts can contain task details and dependency summaries, so treat them as potentially sensitive. Otherwise the orchestrator keeps only its compact final report.
    The orchestrator launches each worker with `--yolo`, as requested for this workflow.

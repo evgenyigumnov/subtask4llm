@@ -69,10 +69,9 @@ The orchestrator accepts a UTF-8 JSON document with `version: 1`, one goal, and 
 Validate without starting a child session:
 
 ```bash
-python3 <skill-path>/scripts/run_workflow.py <plan.json> \
-  --workspace <repository> \
-  --model <worker-model> \
-  --dry-run
+python3 <skill-path>/scripts/run_workflow.py <plan.json> --workspace <repository> --dry-run
 ```
+
+On Windows PowerShell, use `py -3 <skill-path>\scripts\run_workflow.py <plan.json> --workspace <repository> --dry-run`. Add `--model <worker-model>` only when you want to override the Codex CLI configured model.
 
 The dry run displays the effective child command controls and step ordering. It does not contact a model.
