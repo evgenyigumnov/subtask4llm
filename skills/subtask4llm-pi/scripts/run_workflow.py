@@ -28,7 +28,6 @@ except ImportError:  # pragma: no cover - Windows fallback uses atomic creation.
 
 MAX_STEPS = 10
 MAX_DIAGNOSTIC_CHARS = 4_000
-MAX_PROGRESS_LOG_CHARS = 512_000
 MAX_PROGRESS_LINE_CHARS = 800
 PROGRESS_TAIL_LINES = 12
 DEFAULT_TIMEOUT_CHECKPOINT_SECONDS = 600
@@ -111,55 +110,27 @@ class LiveProgressLog:
         self.close()
 
 
-class ProgressLog:
-    """Keep a bounded, human-readable tail of structured Pi progress events."""
+class WorkerProgress:
+    """Keep a diagnostic tail in memory and append worker events to the run log."""
 
-    def __init__(
-        self,
-        path: Path,
-        *,
-        live_log: LiveProgressLog | None = None,
-        live_scope: str = "",
-    ):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self.path = path
-        self.handle = path.open("w", encoding="utf-8")
+    def __init__(self, *, live_log: LiveProgressLog, live_scope: str):
         self.live_log = live_log
         self.live_scope = live_scope
         self.last_summary = ""
+        self.lines: deque[str] = deque(maxlen=200)
 
     def append(self, elapsed_seconds: float, summary: str) -> None:
         summary = _truncate(_collapse_text(summary), MAX_PROGRESS_LINE_CHARS)
         if not summary or summary == self.last_summary:
             return
         line = f"[+{int(elapsed_seconds):04d}s] {summary}"
-        self.handle.write(line + "\n")
-        self.handle.flush()
-        if self.live_log is not None:
-            prefix = f"{self.live_scope}: " if self.live_scope else ""
-            self.live_log.append(prefix + summary)
+        self.lines.append(line)
+        prefix = f"{self.live_scope}: " if self.live_scope else ""
+        self.live_log.append(prefix + summary)
         self.last_summary = summary
-        if self.handle.tell() > MAX_PROGRESS_LOG_CHARS:
-            self.handle.close()
-            tail = _read_progress_lines(self.path, max_lines=200)
-            self.path.write_text("\n".join(tail) + ("\n" if tail else ""), encoding="utf-8")
-            self.handle = self.path.open("a", encoding="utf-8")
 
     def tail(self, max_lines: int = PROGRESS_TAIL_LINES) -> str:
-        self.handle.flush()
-        return "\n".join(_read_progress_lines(self.path, max_lines=max_lines))
-
-    def close(self) -> None:
-        if not self.handle.closed:
-            self.handle.flush()
-            self.handle.close()
-
-
-def _read_progress_lines(path: Path, *, max_lines: int) -> list[str]:
-    if not path.exists():
-        return []
-    with path.open("r", encoding="utf-8", errors="replace") as handle:
-        return list(deque((line.rstrip("\n") for line in handle), maxlen=max_lines))
+        return "\n".join(list(self.lines)[-max_lines:])
 
 
 def _compact_event_text(value: Any, *, limit: int = 500, tail: bool = False) -> str:
@@ -244,7 +215,7 @@ def read_final_assistant_message(path: Path) -> str:
 class ProgressTracker:
     """Parse Pi JSONL as it arrives and keep only useful activity summaries."""
 
-    def __init__(self, log: ProgressLog, started_at: float):
+    def __init__(self, log: WorkerProgress, started_at: float):
         self.log = log
         self.started_at = started_at
         self.offset = 0
@@ -805,7 +776,6 @@ def run_process(
     env: Mapping[str, str],
     timeout_seconds: int,
     timeout_checkpoint_seconds: int,
-    progress_path: Path,
     step_label: str,
     attempt: int,
     live_log: LiveProgressLog,
@@ -813,8 +783,7 @@ def run_process(
     """Stream Pi JSONL events to a temporary file and diagnose quiet commands."""
     started_at = time.monotonic()
     next_checkpoint = timeout_checkpoint_seconds
-    progress_log = ProgressLog(
-        progress_path,
+    progress_log = WorkerProgress(
         live_log=live_log,
         live_scope=f"{step_label} attempt {attempt}",
     )
@@ -831,7 +800,6 @@ def run_process(
         try:
             stdout_file = stream_path.open("wb")
         except OSError as exc:
-            progress_log.close()
             return ProcessOutcome(None, "", "", launch_error=f"could not create Pi event stream: {exc}")
         with stdout_file, tempfile.TemporaryFile(mode="w+b") as stderr_file:
             try:
@@ -846,7 +814,6 @@ def run_process(
                     start_new_session=(os.name == "posix"),
                 )
             except OSError as exc:
-                progress_log.close()
                 return ProcessOutcome(None, "", "", launch_error=str(exc))
 
             tracker = ProgressTracker(progress_log, started_at)
@@ -926,7 +893,6 @@ def run_process(
             stderr = stderr_file.read().decode("utf-8", errors="replace")
 
     progress_tail = progress_log.tail()
-    progress_log.close()
     return ProcessOutcome(
         returncode,
         final_text,
@@ -1087,7 +1053,6 @@ def run_workflow(
                 env=child_environment(),
                 timeout_seconds=timeout_seconds,
                 timeout_checkpoint_seconds=timeout_checkpoint_seconds,
-                progress_path=attempt_dir / "progress.log",
                 step_label=step.id,
                 attempt=attempt,
                 live_log=live_log,
@@ -1189,11 +1154,11 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument(
         "--artifacts-dir",
-        help="new directory outside the workspace in which to retain prompts, progress logs, results, diagnostics, and report",
+        help="new directory outside the workspace in which to retain prompts, results, diagnostics, and report",
     )
     result.add_argument(
         "--live-log",
-        help="write flushed worker activity to this path (default: a per-workspace file in the system temp directory)",
+        help="write flushed workflow activity to this path (default: a per-workspace file in the system temp directory)",
     )
     result.add_argument(
         "--pi-bin", default="pi", help="Pi executable (default: pi on PATH)"
@@ -1323,7 +1288,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             with LiveProgressLog(live_log_path) as live_log:
                 live_log.append(f"Workflow started: {plan.goal}")
                 print(
-                    f"Live worker activity log: {live_log_path}\n"
+                    f"Workflow activity log: {live_log_path}\n"
                     f"Follow it with: tail -f {shlex.quote(str(live_log_path))}",
                     file=sys.stderr,
                     flush=True,

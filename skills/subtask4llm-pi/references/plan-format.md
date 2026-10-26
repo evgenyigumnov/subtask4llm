@@ -116,7 +116,8 @@ The plan path can be `-` to read JSON from stdin.
 | `--timeout-checkpoint-seconds N` | `600` | Check progress and inspect active shell commands at each interval before the hard timeout. |
 | `--retries N` | `1` | Number of retries after a failed attempt; only `0` or `1` is allowed. |
 | `--max-summary-chars N` | `16000` | Positive character cap for detailed dependency results included in each prompt. |
-| `--artifacts-dir DIR` | not retained | Optional new directory outside the workspace for prompts, progress logs, diagnostics, results, and the report. The path must not already exist; existing destinations are refused. |
+| `--artifacts-dir DIR` | not retained | Optional new directory outside the workspace for prompts, diagnostics, results, and the report. The path must not already exist; existing destinations are refused. |
+| `--live-log PATH` | system temp directory | Write orchestrator and worker activity to one workflow-wide log. The runner prints its path and a `tail -f` command at startup. |
 | `--pi-bin PATH` | `pi` | Pi executable name or executable path. Names are resolved through `PATH`. |
 | `--model MODEL` | `PI_WORKFLOW_MODEL`, then Pi's configured model | Model passed to Pi as `--model MODEL`; the CLI option takes precedence over the environment variable. |
 
@@ -128,9 +129,11 @@ from recursively loading skills. The worker environment sets
 when either Pi-specific variable indicates it is already running as a child.
 These Pi guards do not read or modify `CODEX_WORKFLOW_*` variables.
 
-The runner writes a bounded, human-readable `progress.log` for each attempt.
-At each 10-minute checkpoint it prints the latest events and continues unless
-a shell command has produced no update for 10 minutes. Such a command is
+The runner streams readable summaries from every attempt, plus orchestrator
+updates, into one workflow-wide live log. It does not create per-attempt
+progress log files. Recent events are also held in memory for diagnostics. At
+each 10-minute checkpoint the runner prints the latest events and continues
+unless a shell command has produced no update for 10 minutes. Such a command is
 stopped immediately; otherwise the worker can continue until the 30-minute
 hard limit. Timeout attempts are not retried. Timeout diagnostics include the
 recent progress and available stderr tail.
@@ -138,9 +141,9 @@ recent progress and available stderr tail.
 Pi CLI can run commands and modify files using the current user's permissions;
 the runner and Pi CLI are not a security sandbox. Review the plan and use an
 appropriately isolated workspace for work that needs stronger containment.
-When `--artifacts-dir` is enabled, retained prompts, diagnostics, and progress
-logs can contain project details, dependency summaries, and recent command
-output.
+When `--artifacts-dir` is enabled, retained prompts and diagnostics can contain
+project details, dependency summaries, and recent command output. The live log
+is managed separately; use `--live-log` to choose its path.
 
 ## Examples
 

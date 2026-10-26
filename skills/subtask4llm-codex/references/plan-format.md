@@ -78,14 +78,19 @@ The dry run displays the effective child command controls and step ordering. It 
 
 ## Progress and timeouts
 
-Codex workers run with `codex exec --json`. The runner converts JSONL events
-into a bounded `progress.log` for each attempt. It prints the latest activity
-at 10-minute checkpoints and continues when there is no silent active shell
-command. A shell command with no update for 10 minutes is stopped immediately.
+Codex workers run with `codex exec --json`. The runner streams readable event
+summaries from every attempt, plus orchestrator updates, into one workflow-wide
+live log. It does not create per-attempt progress log files. The log path and a
+`tail -f` command are printed at startup; use `--live-log PATH` to choose a
+location. The default is a file in the system temporary directory. It prints
+the latest activity at 10-minute checkpoints and continues when there is no
+silent active shell command. A shell command with no update for 10 minutes is
+stopped immediately.
 The default hard maximum is 30 minutes per attempt, configurable with
 `--timeout-seconds`; the checkpoint interval defaults to 10 minutes and is
 configurable with `--timeout-checkpoint-seconds`. Timeout attempts are not
 retried. Timeout diagnostics include recent progress and the available stderr
-tail. `--artifacts-dir` retains the progress logs along with prompts, results,
-diagnostics, and the report; without it, only the final compact report is
-kept after the workflow ends.
+tail. `--artifacts-dir` retains prompts, results, diagnostics, and the report;
+the workflow-wide activity log is controlled separately with `--live-log`.
+Without `--artifacts-dir`, the runner prints the compact final report to stdout
+and removes the temporary worker artifacts after the run ends.
