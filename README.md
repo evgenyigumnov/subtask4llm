@@ -28,3 +28,7 @@ are created. At startup, the runner prints the log path and a `tail -f` command.
 Use `--live-log <path>` to choose where the log is written.
 The planner should share that path and let the user follow progress there instead
 of repeatedly polling workers or rereading the log.
+
+By default, both runners stop after a subtask remains unsuccessful after its
+allowed attempts. Pass `--continue-on-error` at launch to run the remaining plan
+steps; the final workflow status still reports failure if any step failed.

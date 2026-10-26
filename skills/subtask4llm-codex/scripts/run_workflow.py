@@ -612,6 +612,7 @@ def dependency_summary_text(
     step: Step,
     completed_results: Mapping[str, Mapping[str, Any]],
     max_chars: int,
+    failed_steps: Mapping[str, str] | None = None,
 ) -> str:
     """Include detailed results from declared dependencies within a strict character cap."""
     if not step.depends_on:
@@ -621,21 +622,31 @@ def dependency_summary_text(
     for dependency in step.depends_on:
         result = completed_results.get(dependency)
         if result is None:
-            raise WorkflowError(f"missing completed dependency result: {dependency}")
-        details = [
-            f"- {dependency}",
-            f"  Summary: {_collapse_text(str(result['summary']))}",
-        ]
-        if result["files_changed"]:
-            details.append("  Files changed: " + ", ".join(result["files_changed"]))
-        if result["verification"]:
-            checks = "; ".join(
-                f"{_collapse_text(item['command'])} -> {_collapse_text(item['outcome'])}"
-                for item in result["verification"]
-            )
-            details.append("  Verification: " + checks)
-        if result["risks"]:
-            details.append("  Risks: " + "; ".join(result["risks"]))
+            failure = (failed_steps or {}).get(dependency)
+            if failure is None:
+                raise WorkflowError(f"missing completed dependency result: {dependency}")
+            details = [
+                f"- {dependency}",
+                "  Status: failed after its allowed attempts; the workflow is continuing because "
+                "--continue-on-error was set.",
+            ]
+            if failure:
+                details.append("  Diagnostic: " + _collapse_text(failure))
+        else:
+            details = [
+                f"- {dependency}",
+                f"  Summary: {_collapse_text(str(result['summary']))}",
+            ]
+            if result["files_changed"]:
+                details.append("  Files changed: " + ", ".join(result["files_changed"]))
+            if result["verification"]:
+                checks = "; ".join(
+                    f"{_collapse_text(item['command'])} -> {_collapse_text(item['outcome'])}"
+                    for item in result["verification"]
+                )
+                details.append("  Verification: " + checks)
+            if result["risks"]:
+                details.append("  Risks: " + "; ".join(result["risks"]))
         for detail in details:
             separator = 1 if lines else 0
             available = max_chars - used - separator
@@ -670,6 +681,7 @@ def build_prompt(
     step: Step,
     completed_results: Mapping[str, Mapping[str, Any]],
     max_summary_chars: int,
+    failed_steps: Mapping[str, str] | None = None,
     attempt: int = 1,
     prior_error: str | None = None,
 ) -> str:
@@ -683,7 +695,9 @@ def build_prompt(
             + "\nInspect the current workspace state before continuing; the prior attempt may "
             "have made partial changes.\n"
         )
-    dependencies = dependency_summary_text(step, completed_results, max_summary_chars)
+    dependencies = dependency_summary_text(
+        step, completed_results, max_summary_chars, failed_steps
+    )
     shared_context = plan.context or "No additional shared context provided."
     step_context = step.context or "No additional step-specific context provided."
     return f"""FIRST: Do not use the `subtask4llm` skill (`$subtask4llm-codex`) or start another subtask4llm workflow.
@@ -950,6 +964,8 @@ def dry_run_report(
     model: str | None,
     workspace: Path,
     skill_manifest: Path,
+    retries: int,
+    continue_on_error: bool,
     timeout_seconds: int,
     timeout_checkpoint_seconds: int,
 ) -> dict[str, Any]:
@@ -971,6 +987,8 @@ def dry_run_report(
         "goal": plan.goal,
         "model": model or "Codex CLI configured default",
         "step_count": len(plan.steps),
+        "retries": retries,
+        "continue_on_error": continue_on_error,
         "timeout_seconds": timeout_seconds,
         "timeout_checkpoint_seconds": timeout_checkpoint_seconds,
         "recursion_guard": {
@@ -990,6 +1008,7 @@ def run_workflow(
     timeout_seconds: int,
     timeout_checkpoint_seconds: int,
     retries: int,
+    continue_on_error: bool = False,
     max_summary_chars: int,
     skill_manifest: Path,
     artifact_root: Path,
@@ -998,13 +1017,14 @@ def run_workflow(
     schema_path = artifact_root / "worker-result.schema.json"
     write_json(schema_path, WORKER_RESULT_SCHEMA)
     completed_results: dict[str, dict[str, Any]] = {}
+    failed_steps: dict[str, str] = {}
     reported_files: set[str] = set()
     step_reports: list[dict[str, Any]] = []
     failed = False
 
     for index, step in enumerate(plan.steps, start=1):
         live_log.append(f"Step {index}/{len(plan.steps)}: {step.id} — {step.title}")
-        if failed:
+        if failed and not continue_on_error:
             live_log.append(f"Step {step.id} not run because an earlier step failed")
             step_reports.append(
                 {
@@ -1029,6 +1049,7 @@ def run_workflow(
                 step=step,
                 completed_results=completed_results,
                 max_summary_chars=max_summary_chars,
+                failed_steps=failed_steps,
                 attempt=attempt,
                 prior_error=last_error,
             )
@@ -1108,6 +1129,7 @@ def run_workflow(
                 "attempts": attempts_used,
                 "error": last_error or "worker failed without a diagnostic",
             }
+            failed_steps[step.id] = str(report["error"])
             if last_result is not None:
                 report["result"] = last_result
             step_reports.append(report)
@@ -1141,6 +1163,11 @@ def parser() -> argparse.ArgumentParser:
         help="inspect progress and active shell commands at each interval before the hard timeout",
     )
     result.add_argument("--retries", type=int, choices=(0, 1), default=1)
+    result.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="run later steps after a step exhausts its attempts; the workflow still reports failure",
+    )
     result.add_argument(
         "--max-summary-chars",
         type=int,
@@ -1237,6 +1264,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     model=model,
                     workspace=workspace,
                     skill_manifest=skill_manifest,
+                    retries=args.retries,
+                    continue_on_error=args.continue_on_error,
                     timeout_seconds=args.timeout_seconds,
                     timeout_checkpoint_seconds=args.timeout_checkpoint_seconds,
                 )
@@ -1274,6 +1303,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         timeout_seconds=args.timeout_seconds,
                         timeout_checkpoint_seconds=args.timeout_checkpoint_seconds,
                         retries=args.retries,
+                        continue_on_error=args.continue_on_error,
                         max_summary_chars=args.max_summary_chars,
                         skill_manifest=skill_manifest,
                         artifact_root=Path(temporary),

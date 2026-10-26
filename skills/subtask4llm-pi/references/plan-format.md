@@ -98,10 +98,14 @@ declared dependencies. Workers run sequentially in one workspace, so later
 steps can inspect changes already made there.
 
 The runner attempts each step once, plus the configured retry count, except
-that timeouts are not retried. A retry count of `1` is the maximum; after the
-last unsuccessful attempt, the workflow stops and later steps are reported as
-not run. A failed attempt may have left partial changes in the workspace; the
-runner does not roll them back.
+that timeouts are not retried. A retry count of `1` is the maximum. By default,
+after a step remains unsuccessful, the workflow stops and later steps are
+reported as not run. With `--continue-on-error`, later steps run in plan order
+even when a declared dependency failed; their prompts include the failed
+dependency status and diagnostic instead of a successful result. The workflow
+still reports `failed` and exits with status 1 if any step failed. A failed
+attempt may have left partial changes in the workspace; the runner does not
+roll them back.
 
 ## Runner options
 
@@ -115,6 +119,7 @@ The plan path can be `-` to read JSON from stdin.
 | `--timeout-seconds N` | `1800` | Hard maximum runtime for an individual worker process. |
 | `--timeout-checkpoint-seconds N` | `600` | Check progress and inspect active shell commands at each interval before the hard timeout. |
 | `--retries N` | `1` | Number of retries after a failed attempt; only `0` or `1` is allowed. |
+| `--continue-on-error` | off | Run later steps after a step remains unsuccessful after its allowed attempts. The final workflow status remains failed if any step failed. |
 | `--max-summary-chars N` | `16000` | Positive character cap for detailed dependency results included in each prompt. |
 | `--artifacts-dir DIR` | not retained | Optional new directory outside the workspace for prompts, diagnostics, results, and the report. The path must not already exist; existing destinations are refused. |
 | `--live-log PATH` | system temp directory | Write orchestrator and worker activity to one workflow-wide log. The runner prints its path and a `tail -f` command at startup. |
@@ -153,6 +158,7 @@ starting Pi, then launch it:
 ```bash
 python3 skills/subtask4llm-pi/scripts/run_workflow.py ./plan.json --workspace . --dry-run
 python3 skills/subtask4llm-pi/scripts/run_workflow.py ./plan.json --workspace . --timeout-seconds 1800 --timeout-checkpoint-seconds 600 --retries 1
+python3 skills/subtask4llm-pi/scripts/run_workflow.py ./plan.json --workspace . --continue-on-error
 ```
 
 In Windows PowerShell, use the Python launcher and Windows paths:
@@ -160,6 +166,7 @@ In Windows PowerShell, use the Python launcher and Windows paths:
 ```powershell
 py -3 .\skills\subtask4llm-pi\scripts\run_workflow.py .\plan.json --workspace . --dry-run
 py -3 .\skills\subtask4llm-pi\scripts\run_workflow.py .\plan.json --workspace . --timeout-seconds 1800 --timeout-checkpoint-seconds 600 --retries 1
+py -3 .\skills\subtask4llm-pi\scripts\run_workflow.py .\plan.json --workspace . --continue-on-error
 ```
 
 To retain artifacts, add a fresh path outside the workspace to the launch

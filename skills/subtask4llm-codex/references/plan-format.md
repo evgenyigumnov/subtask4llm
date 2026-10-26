@@ -76,6 +76,20 @@ On Windows PowerShell, use `py -3 <skill-path>\scripts\run_workflow.py <plan.jso
 
 The dry run displays the effective child command controls and step ordering. It does not contact a model.
 
+## Failure handling
+
+By default, the runner stops after a step remains unsuccessful after its allowed
+attempts and reports later steps as `not_run`. Add `--continue-on-error` at
+launch to run later steps in plan order. A later step whose declared dependency
+failed receives that dependency's failure status and diagnostic in its prompt;
+the runner does not invent a successful result for it. The final workflow
+report remains `failed` and the process exits with status 1 if any step failed,
+even when later steps completed successfully.
+
+```bash
+python3 <skill-path>/scripts/run_workflow.py <plan.json> --workspace <repository> --continue-on-error
+```
+
 ## Progress and timeouts
 
 Codex workers run with `codex exec --json`. The runner streams readable event
