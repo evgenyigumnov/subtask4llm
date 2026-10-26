@@ -26,3 +26,5 @@ Both workflow runners write orchestrator and worker activity to one live log per
 run. Each subtask appends its events to that same file; no per-subtask log files
 are created. At startup, the runner prints the log path and a `tail -f` command.
 Use `--live-log <path>` to choose where the log is written.
+The planner should share that path and let the user follow progress there instead
+of repeatedly polling workers or rereading the log.
