@@ -762,13 +762,23 @@ def _resolve_model(cli_model: str | None) -> str | None:
     return model.strip() if model and model.strip() else None
 
 
-def _validate_executable(codex_bin: str) -> None:
-    if os.sep in codex_bin:
+def _validate_executable(codex_bin: str) -> str:
+    """Validate a Codex executable and return its resolved path.
+
+    On Windows, ``shutil.which`` resolves names using PATHEXT (for example,
+    ``codex`` to ``codex.CMD``), but ``CreateProcess`` does not reliably apply
+    that resolution when given the original bare name. Pass the resolved path
+    to ``Popen`` so the executable that passed validation is the one launched.
+    """
+    if os.sep in codex_bin or (os.altsep is not None and os.altsep in codex_bin):
         candidate = Path(codex_bin).expanduser()
         if not candidate.is_file() or not os.access(candidate, os.X_OK):
             raise WorkflowError(f"Codex executable is not executable: {candidate}")
-    elif shutil.which(codex_bin) is None:
+        return str(candidate.resolve())
+    resolved = shutil.which(codex_bin)
+    if resolved is None:
         raise WorkflowError(f"Codex executable not found on PATH: {codex_bin}")
+    return resolved
 
 
 def _print_compact_json(value: Any) -> None:
@@ -805,7 +815,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
             return 0
-        _validate_executable(args.codex_bin)
+        codex_bin = _validate_executable(args.codex_bin)
         artifact_destination: Path | None = None
         if args.artifacts_dir:
             artifact_destination = Path(args.artifacts_dir).expanduser().resolve()
@@ -822,7 +832,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             with tempfile.TemporaryDirectory(prefix="codex-sequential-") as temporary:
                 report = run_workflow(
                     plan=plan,
-                    codex_bin=args.codex_bin,
+                    codex_bin=codex_bin,
                     model=model,
                     workspace=workspace,
                     timeout_seconds=args.timeout_seconds,
