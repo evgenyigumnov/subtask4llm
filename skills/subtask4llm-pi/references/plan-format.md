@@ -57,7 +57,7 @@ ignored by the current runner. A compact example:
 
 ## Worker result contract
 
-Every Pi worker must finish with raw JSON as its final print-mode text. Do not
+Every Pi worker must finish with raw JSON as its final assistant text. Do not
 wrap it in a Markdown code fence or add commentary before or after it. The
 object must contain exactly these fields:
 
@@ -80,12 +80,13 @@ and `outcome`. The runner rejects malformed JSON, duplicate keys, Markdown
 wrappers, extra or missing fields, and invalid field types. Only `completed`
 counts as success. A `blocked` or `failed` result is an unsuccessful attempt.
 
-Pi print mode returns the final assistant text on stdout and exits after one
+Pi JSON mode returns a JSONL event stream on stdout and exits after one
 invocation. The runner passes each prompt on stdin and launches Pi with
-`--print --no-session --no-skills`, plus `--model MODEL` when a model is set.
-It accepts the stdout only if it parses as the exact result object above; a
-nonzero process exit also fails the attempt. See the official
-[Pi CLI integration guide](https://pi.dev/docs/latest/cli-integration).
+`--mode json --no-session --no-skills`, plus `--model MODEL` when a model is
+set. It extracts the final assistant text and accepts it only if it parses as
+the exact result object above; a nonzero process exit also fails the attempt.
+See the official [Pi CLI integration guide](https://pi.dev/docs/latest/cli-integration)
+and [JSON event stream reference](https://pi.dev/docs/latest/json).
 
 ## Dependency handoff and execution
 
@@ -96,10 +97,11 @@ section of the prompt, truncated to the `--max-summary-chars` limit across all
 declared dependencies. Workers run sequentially in one workspace, so later
 steps can inspect changes already made there.
 
-The runner attempts each step once, plus the configured retry count. A retry
-count of `1` is the maximum; after the last unsuccessful attempt, the workflow
-stops and later steps are reported as not run. A failed attempt may have left
-partial changes in the workspace; the runner does not roll them back.
+The runner attempts each step once, plus the configured retry count, except
+that timeouts are not retried. A retry count of `1` is the maximum; after the
+last unsuccessful attempt, the workflow stops and later steps are reported as
+not run. A failed attempt may have left partial changes in the workspace; the
+runner does not roll them back.
 
 ## Runner options
 
@@ -110,10 +112,11 @@ The plan path can be `-` to read JSON from stdin.
 | --- | --- | --- |
 | `--workspace DIR` | `.` | Existing directory shared by all workers; resolved before execution. |
 | `--dry-run` | off | Validates the plan and prints the ordered steps, command arguments, and effective controls as JSON without launching Pi. |
-| `--timeout-seconds N` | `1800` | Positive timeout for each individual worker process. |
+| `--timeout-seconds N` | `1800` | Hard maximum runtime for an individual worker process. |
+| `--timeout-checkpoint-seconds N` | `600` | Check progress and inspect active shell commands at each interval before the hard timeout. |
 | `--retries N` | `1` | Number of retries after a failed attempt; only `0` or `1` is allowed. |
 | `--max-summary-chars N` | `16000` | Positive character cap for detailed dependency results included in each prompt. |
-| `--artifacts-dir DIR` | not retained | Optional new directory outside the workspace for prompts, diagnostics, results, and the report. The path must not already exist; existing destinations are refused. |
+| `--artifacts-dir DIR` | not retained | Optional new directory outside the workspace for prompts, progress logs, diagnostics, results, and the report. The path must not already exist; existing destinations are refused. |
 | `--pi-bin PATH` | `pi` | Pi executable name or executable path. Names are resolved through `PATH`. |
 | `--model MODEL` | `PI_WORKFLOW_MODEL`, then Pi's configured model | Model passed to Pi as `--model MODEL`; the CLI option takes precedence over the environment variable. |
 
@@ -125,11 +128,19 @@ from recursively loading skills. The worker environment sets
 when either Pi-specific variable indicates it is already running as a child.
 These Pi guards do not read or modify `CODEX_WORKFLOW_*` variables.
 
+The runner writes a bounded, human-readable `progress.log` for each attempt.
+At each 10-minute checkpoint it prints the latest events and continues unless
+a shell command has produced no update for 10 minutes. Such a command is
+stopped immediately; otherwise the worker can continue until the 30-minute
+hard limit. Timeout attempts are not retried. Timeout diagnostics include the
+recent progress and available stderr tail.
+
 Pi CLI can run commands and modify files using the current user's permissions;
 the runner and Pi CLI are not a security sandbox. Review the plan and use an
 appropriately isolated workspace for work that needs stronger containment.
-When `--artifacts-dir` is enabled, retained prompts and diagnostics can contain
-project details and dependency summaries.
+When `--artifacts-dir` is enabled, retained prompts, diagnostics, and progress
+logs can contain project details, dependency summaries, and recent command
+output.
 
 ## Examples
 
@@ -138,14 +149,14 @@ starting Pi, then launch it:
 
 ```bash
 python3 skills/subtask4llm-pi/scripts/run_workflow.py ./plan.json --workspace . --dry-run
-python3 skills/subtask4llm-pi/scripts/run_workflow.py ./plan.json --workspace . --timeout-seconds 1800 --retries 1
+python3 skills/subtask4llm-pi/scripts/run_workflow.py ./plan.json --workspace . --timeout-seconds 1800 --timeout-checkpoint-seconds 600 --retries 1
 ```
 
 In Windows PowerShell, use the Python launcher and Windows paths:
 
 ```powershell
 py -3 .\skills\subtask4llm-pi\scripts\run_workflow.py .\plan.json --workspace . --dry-run
-py -3 .\skills\subtask4llm-pi\scripts\run_workflow.py .\plan.json --workspace . --timeout-seconds 1800 --retries 1
+py -3 .\skills\subtask4llm-pi\scripts\run_workflow.py .\plan.json --workspace . --timeout-seconds 1800 --timeout-checkpoint-seconds 600 --retries 1
 ```
 
 To retain artifacts, add a fresh path outside the workspace to the launch

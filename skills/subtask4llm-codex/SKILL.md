@@ -30,9 +30,10 @@ Use the current Codex as the planner and reviewer. Delegate implementation steps
 
    Omit `--model` to use the model configured for Codex CLI. Add `--model <worker-model>` only when the model ID is known and should override that configuration.
 
-   Add `--artifacts-dir <directory>` only when persistent prompts and diagnostics are useful. Those artifacts can contain task details and dependency summaries, so treat them as potentially sensitive. Otherwise the orchestrator keeps only its compact final report.
+   Add `--artifacts-dir <directory>` when persistent prompts, progress logs, and diagnostics are useful. Those artifacts can contain task details, dependency summaries, and command output, so treat them as potentially sensitive. Otherwise the orchestrator keeps only its compact final report.
+   The runner captures Codex JSONL events into a bounded `progress.log`. It checks progress every 10 minutes, stops a shell command that has produced no update for 10 minutes, and otherwise continues to a 30-minute hard limit. Adjust the hard limit or checkpoint interval with `--timeout-seconds` and `--timeout-checkpoint-seconds`. A timeout includes the recent activity in its diagnostic and is not retried.
    The orchestrator launches each worker with `--yolo`, as requested for this workflow.
-7. If the user asks to stop while the workflow is running, interrupt it promptly. If the user sends a follow-up comment, acknowledge it and incorporate it into the remaining work where possible. If a worker fails, let the orchestrator perform its single retry. After the retry fails, stop; do not improvise additional child runs.
+7. If the user asks to stop while the workflow is running, interrupt it promptly. If the user sends a follow-up comment, acknowledge it and incorporate it into the remaining work where possible. Non-timeout worker failures can use the orchestrator's single retry. Timeouts and detected stalled commands are not retried. After the last allowed attempt fails, stop; do not improvise additional child runs.
 8. Review the final report and the actual workspace diff. Run or inspect proportionate final verification before claiming the user's task is complete. Report results, changed files, checks, and unresolved risks without reproducing child transcripts.
 
 ## Invariants

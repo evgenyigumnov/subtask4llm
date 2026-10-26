@@ -160,6 +160,7 @@ class PlanValidationTests(RunnerCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         output = result.stdout
         for expected in (
+            "--json",
             "--ephemeral",
             "--strict-config",
             "--output-schema",

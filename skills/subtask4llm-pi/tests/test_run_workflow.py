@@ -76,6 +76,16 @@ record = {{
 with Path(os.environ["FAKE_PI_LOG"]).open("a", encoding="utf-8") as log:
     log.write(json.dumps(record) + "\\n")
 
+def emit(text):
+    if "--mode" in args and args[args.index("--mode") + 1] == "json":
+        event = {{
+            "type": "message_end",
+            "message": {{"role": "assistant", "content": [{{"type": "text", "text": text}}]}},
+        }}
+        print(json.dumps(event))
+    else:
+        print(text)
+
 if os.environ.get("FAKE_PI_SLEEP_SECONDS"):
     time.sleep(float(os.environ["FAKE_PI_SLEEP_SECONDS"]))
 if call_number <= int(os.environ.get("FAKE_PI_FAIL_FIRST", "0")):
@@ -89,13 +99,13 @@ if mode == "nonzero":
     print("synthetic nonzero exit", file=sys.stderr)
     raise SystemExit(8)
 if mode == "malformed":
-    print("not-json")
+    emit("not-json")
     raise SystemExit(0)
 if mode == "markdown":
-    print("```json\\n{{}}\\n```")
+    emit("```json\\n{{}}\\n```")
     raise SystemExit(0)
 if mode == "duplicate":
-    print('{{"status":"completed","status":"completed"}}')
+    emit('{{"status":"completed","status":"completed"}}')
     raise SystemExit(0)
 
 result = {{
@@ -111,7 +121,7 @@ elif mode == "missing-field":
     result.pop("risks")
 elif mode == "bad-verification":
     result["verification"] = [{{"command": "synthetic-check", "outcome": 3}}]
-print(json.dumps(result))
+emit(json.dumps(result))
 """
 
 
@@ -266,7 +276,7 @@ class DryRunTests(RunnerCase):
         for item in report["steps"]:
             self.assertEqual(
                 item["command"],
-                [str(self.fake_pi.resolve()), "--print", "--no-session", "--no-skills", "--model", "cli-model"],
+                [str(self.fake_pi.resolve()), "--mode", "json", "--no-session", "--no-skills", "--model", "cli-model"],
             )
             self.assertEqual(item["attempts_max"], 1)
             self.assertEqual(item["prompt_input"], "stdin")
@@ -292,7 +302,7 @@ class WorkerExecutionTests(RunnerCase):
         record = records[0]
         self.assertEqual(
             record["args"],
-            ["--print", "--no-session", "--no-skills", "--model", "configured-model"],
+            ["--mode", "json", "--no-session", "--no-skills", "--model", "configured-model"],
         )
         self.assertEqual(record["pi_child"], "1")
         self.assertEqual(record["pi_depth"], "1")
@@ -345,7 +355,7 @@ class WorkerExecutionTests(RunnerCase):
         self.assertEqual(env_result.returncode, 0, env_result.stderr)
         self.assertEqual(
             self.calls()[0]["args"],
-            ["--print", "--no-session", "--no-skills", "--model", "from-environment"],
+            ["--mode", "json", "--no-session", "--no-skills", "--model", "from-environment"],
         )
 
         self.log_path.unlink(missing_ok=True)
@@ -361,7 +371,7 @@ class WorkerExecutionTests(RunnerCase):
         self.assertEqual(cli_result.returncode, 0, cli_result.stderr)
         self.assertEqual(
             self.calls()[0]["args"],
-            ["--print", "--no-session", "--no-skills", "--model", "from-cli"],
+            ["--mode", "json", "--no-session", "--no-skills", "--model", "from-cli"],
         )
 
     def test_recursion_guards_refuse_pi_child_or_nonzero_depth(self) -> None:

@@ -13,6 +13,8 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -25,6 +27,10 @@ except ImportError:  # pragma: no cover - Windows fallback uses atomic creation.
 
 MAX_STEPS = 10
 MAX_DIAGNOSTIC_CHARS = 4_000
+MAX_PROGRESS_LOG_CHARS = 512_000
+MAX_PROGRESS_LINE_CHARS = 800
+PROGRESS_TAIL_LINES = 12
+DEFAULT_TIMEOUT_CHECKPOINT_SECONDS = 600
 STEP_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 SUCCESS_STATUS = "completed"
 
@@ -89,6 +95,205 @@ class ProcessOutcome:
     stderr: str
     timed_out: bool = False
     launch_error: str | None = None
+    progress_tail: str = ""
+    timeout_reason: str | None = None
+    retryable: bool = True
+
+
+@dataclass
+class ActiveCommand:
+    label: str
+    started_at: float
+    last_activity_at: float
+
+
+class ProgressLog:
+    """Keep a bounded, human-readable tail of structured Codex progress events."""
+
+    def __init__(self, path: Path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
+        self.handle = path.open("w", encoding="utf-8")
+        self.last_summary = ""
+
+    def append(self, elapsed_seconds: float, summary: str) -> None:
+        summary = _truncate(_collapse_text(summary), MAX_PROGRESS_LINE_CHARS)
+        if not summary or summary == self.last_summary:
+            return
+        line = f"[+{int(elapsed_seconds):04d}s] {summary}"
+        self.handle.write(line + "\n")
+        self.handle.flush()
+        self.last_summary = summary
+        if self.handle.tell() > MAX_PROGRESS_LOG_CHARS:
+            self.handle.close()
+            tail = _read_progress_lines(self.path, max_lines=200)
+            self.path.write_text("\n".join(tail) + ("\n" if tail else ""), encoding="utf-8")
+            self.handle = self.path.open("a", encoding="utf-8")
+
+    def tail(self, max_lines: int = PROGRESS_TAIL_LINES) -> str:
+        self.handle.flush()
+        return "\n".join(_read_progress_lines(self.path, max_lines=max_lines))
+
+    def close(self) -> None:
+        if not self.handle.closed:
+            self.handle.flush()
+            self.handle.close()
+
+
+def _read_progress_lines(path: Path, *, max_lines: int) -> list[str]:
+    if not path.exists():
+        return []
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        return list(deque((line.rstrip("\n") for line in handle), maxlen=max_lines))
+
+
+def _compact_event_text(value: Any, *, limit: int = 500, tail: bool = False) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = _collapse_text(value)
+    if tail and len(text) > limit:
+        return "…" + text[-(limit - 1) :]
+    return _truncate(text, limit)
+
+
+class ProgressTracker:
+    """Parse Codex JSONL as it arrives and keep only useful activity summaries."""
+
+    def __init__(self, log: ProgressLog, started_at: float):
+        self.log = log
+        self.started_at = started_at
+        self.offset = 0
+        self.pending = b""
+        self.last_event_at: float | None = None
+        self.last_event_summary = "No structured Codex events received yet"
+        self.active_commands: dict[str, ActiveCommand] = {}
+
+    def drain(self, stream_path: Path, *, final: bool = False) -> int:
+        try:
+            with stream_path.open("rb") as handle:
+                handle.seek(self.offset)
+                chunk = handle.read()
+        except OSError:
+            return 0
+        self.offset += len(chunk)
+        self.pending += chunk
+        lines = self.pending.split(b"\n")
+        self.pending = lines.pop()
+        if final and self.pending:
+            lines.append(self.pending)
+            self.pending = b""
+        parsed = 0
+        for raw_line in lines:
+            if not raw_line.strip():
+                continue
+            try:
+                event = json.loads(raw_line.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(event, dict):
+                continue
+            now = time.monotonic()
+            self.last_event_at = now
+            parsed += 1
+            self._update_active_command(event, now)
+            summary = self._summarize(event)
+            if summary:
+                self.log.append(now - self.started_at, summary)
+                self.last_event_summary = summary
+            else:
+                self.last_event_summary = f"Codex event {event.get('type', 'unknown')}"
+        return parsed
+
+    def _update_active_command(self, event: Mapping[str, Any], now: float) -> None:
+        item = event.get("item")
+        if not isinstance(item, dict) or item.get("type") != "command_execution":
+            return
+        item_id = str(item.get("id") or "command")
+        command = item.get("command")
+        if isinstance(command, list):
+            command = " ".join(str(part) for part in command)
+        event_type = event.get("type")
+        if event_type == "item.started":
+            label = _compact_event_text(command, limit=600) or "Codex shell command"
+            self.active_commands[item_id] = ActiveCommand(label, now, now)
+        elif event_type == "item.updated" and item_id in self.active_commands:
+            self.active_commands[item_id].last_activity_at = now
+        elif event_type == "item.completed":
+            self.active_commands.pop(item_id, None)
+
+    def _summarize(self, event: Mapping[str, Any]) -> str:
+        event_type = event.get("type")
+        if event_type == "thread.started":
+            return "Codex worker session started"
+        if event_type == "turn.started":
+            return "Codex started processing the task"
+        if event_type == "turn.completed":
+            return "Codex completed a turn"
+        if event_type == "turn.failed":
+            error = event.get("error")
+            detail = error.get("message") if isinstance(error, dict) else error
+            compact = _compact_event_text(detail, limit=500)
+            return f"Codex turn failed: {compact}" if compact else "Codex turn failed"
+        if event_type == "error":
+            detail = _compact_event_text(event.get("message"), limit=500)
+            return f"Codex stream error: {detail}" if detail else "Codex stream error"
+        item = event.get("item")
+        if not isinstance(item, dict):
+            return ""
+        item_type = item.get("type")
+        if item_type == "command_execution":
+            command = item.get("command")
+            if isinstance(command, list):
+                command = " ".join(str(part) for part in command)
+            detail = _compact_event_text(command, limit=500)
+            if event_type == "item.started":
+                return f"Codex started command: {detail}" if detail else "Codex started a shell command"
+            if event_type == "item.updated":
+                output = _compact_event_text(item.get("aggregated_output"), limit=300, tail=True)
+                return f"Codex command is running: {output}" if output else "Codex command is running"
+            if event_type == "item.completed":
+                exit_code = item.get("exit_code")
+                status = item.get("status") or "completed"
+                output = _compact_event_text(item.get("aggregated_output"), limit=300, tail=True)
+                suffix = f" (exit code {exit_code})" if exit_code is not None else ""
+                return f"Codex command {status}{suffix}: {output}" if output else f"Codex command {status}{suffix}"
+        if item_type == "agent_message" and event_type == "item.completed":
+            text = _compact_event_text(item.get("text"), limit=500)
+            return f"Codex assistant response: {text}" if text else "Codex assistant response ended"
+        if item_type == "mcp_tool_call":
+            tool = item.get("tool") or item.get("name") or item.get("server") or "MCP tool"
+            state = "started" if event_type == "item.started" else "updated" if event_type == "item.updated" else "finished"
+            return f"Codex {tool} {state}"
+        if item_type == "web_search":
+            query = _compact_event_text(item.get("query"), limit=400)
+            state = "started" if event_type == "item.started" else "finished"
+            return f"Codex web search {state}: {query}" if query else f"Codex web search {state}"
+        if item_type == "file_change":
+            return f"Codex file change {event_type.removeprefix('item.')}"
+        if item_type == "error":
+            detail = _compact_event_text(item.get("message"), limit=500)
+            return f"Codex worker error: {detail}" if detail else "Codex worker error"
+        if item_type == "reasoning":
+            return "Codex is processing the task"
+        return ""
+
+    def stalled_command(self, now: float, silence_seconds: int) -> ActiveCommand | None:
+        stalled = [
+            command
+            for command in self.active_commands.values()
+            if now - command.last_activity_at >= silence_seconds
+        ]
+        return max(stalled, key=lambda command: now - command.last_activity_at, default=None)
+
+    def status_line(self, now: float) -> str:
+        if self.active_commands:
+            command = next(iter(self.active_commands.values()))
+            quiet = int(now - command.last_activity_at)
+            return f"active shell command has had no update for {quiet}s: {command.label}"
+        if self.last_event_at is None:
+            return self.last_event_summary
+        quiet = int(now - self.last_event_at)
+        return f"no active shell command; last event {quiet}s ago: {self.last_event_summary}"
 
 
 class WorkspaceLock:
@@ -282,6 +487,7 @@ def build_command(
     if model:
         command.extend(["--model", model])
     command.extend([
+        "--json",
         "--yolo",
         "--cd",
         str(workspace),
@@ -309,6 +515,47 @@ def build_command(
 build_codex_command = build_command
 
 
+def terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
+    """Stop the worker and child shell commands on supported platforms."""
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+        return
+
+    try:  # pragma: no cover - exercised only on Windows.
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        try:
+            process.kill()
+        except OSError:
+            pass
+    try:  # pragma: no cover - exercised only on Windows.
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        process.wait()
+
+
 def _collapse_text(value: str) -> str:
     return " ".join(value.split())
 
@@ -321,6 +568,16 @@ def _truncate(value: str, limit: int) -> str:
     if limit == 1:
         return "…"
     return value[: limit - 1] + "…"
+
+
+def _truncate_tail(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    if limit <= 0:
+        return ""
+    if limit == 1:
+        return "…"
+    return "…" + value[-(limit - 1) :]
 
 
 def dependency_summary_text(
@@ -491,61 +748,152 @@ def run_process(
     cwd: Path,
     env: Mapping[str, str],
     timeout_seconds: int,
+    timeout_checkpoint_seconds: int,
+    progress_path: Path,
+    step_label: str,
 ) -> ProcessOutcome:
-    """Run a worker and terminate its process group on timeout."""
-    # stdout is intentionally discarded and stderr is spooled to disk. A verbose
-    # child therefore cannot grow the orchestrator's memory without bound.
-    with tempfile.TemporaryFile(mode="w+b") as stderr_file:
+    """Stream Codex JSONL events to a temporary file and diagnose quiet commands."""
+    started_at = time.monotonic()
+    next_checkpoint = timeout_checkpoint_seconds
+    progress_log = ProgressLog(progress_path)
+    timeout_reason: str | None = None
+    timed_out = False
+    retryable = True
+    returncode: int | None = None
+    stderr = ""
+
+    with tempfile.TemporaryDirectory(prefix="codex-worker-stream-") as stream_dir:
+        stream_path = Path(stream_dir) / "events.jsonl"
         try:
-            process = subprocess.Popen(
-                list(command),
-                cwd=str(cwd),
-                env=dict(env),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=stderr_file,
-                text=False,
-                start_new_session=(os.name == "posix"),
-            )
+            stdout_file = stream_path.open("wb")
         except OSError as exc:
-            return ProcessOutcome(None, "", "", launch_error=str(exc))
-        timed_out = False
-        try:
-            process.communicate(prompt.encode("utf-8"), timeout=timeout_seconds)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            if os.name == "posix":
+            progress_log.close()
+            return ProcessOutcome(None, "", "", launch_error=f"could not create Codex event stream: {exc}")
+        with stdout_file, tempfile.TemporaryFile(mode="w+b") as stderr_file:
+            try:
+                process = subprocess.Popen(
+                    list(command),
+                    cwd=str(cwd),
+                    env=dict(env),
+                    stdin=subprocess.PIPE,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    text=False,
+                    start_new_session=(os.name == "posix"),
+                )
+            except OSError as exc:
+                progress_log.close()
+                return ProcessOutcome(None, "", "", launch_error=str(exc))
+
+            tracker = ProgressTracker(progress_log, started_at)
+            first_communicate = True
+            while True:
+                tracker.drain(stream_path)
+                if process.poll() is not None:
+                    process.communicate()
+                    returncode = process.returncode
+                    break
+                now = time.monotonic()
+                elapsed = now - started_at
+
+                stalled_command = tracker.stalled_command(now, timeout_checkpoint_seconds)
+                if stalled_command is not None:
+                    quiet = int(now - stalled_command.last_activity_at)
+                    timeout_reason = (
+                        f"Codex shell command appears stalled after {quiet}s without an update: "
+                        f"{stalled_command.label}"
+                    )
+                    timed_out = True
+                    retryable = False
+                    break
+
+                if elapsed >= timeout_seconds:
+                    timeout_reason = f"Codex worker timed out at its {timeout_seconds}s maximum runtime"
+                    timed_out = True
+                    retryable = False
+                    break
+
+                if elapsed >= next_checkpoint and next_checkpoint < timeout_seconds:
+                    checkpoint_minute = int(next_checkpoint // 60)
+                    status = tracker.status_line(now)
+                    progress_log.append(elapsed, f"{checkpoint_minute}-minute checkpoint: {status}")
+                    tail = progress_log.tail()
+                    print(
+                        f"Codex step {step_label}: {checkpoint_minute}-minute timeout checkpoint; "
+                        f"continuing until the next check.\nRecent activity:\n{tail}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    next_checkpoint += timeout_checkpoint_seconds
+                    continue
+
+                wait_seconds = min(1.0, timeout_seconds - elapsed, next_checkpoint - elapsed)
                 try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                    process.wait(timeout=2)
-                except (ProcessLookupError, subprocess.TimeoutExpired):
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-            else:
-                process.kill()
-            process.communicate()
-        stderr_file.flush()
-        size = stderr_file.tell()
-        stderr_file.seek(max(0, size - (MAX_DIAGNOSTIC_CHARS * 4)))
-        stderr = stderr_file.read().decode("utf-8", errors="replace")
-        return ProcessOutcome(process.returncode, "", stderr, timed_out=timed_out)
+                    process.communicate(
+                        prompt.encode("utf-8") if first_communicate else None,
+                        timeout=max(0.05, wait_seconds),
+                    )
+                    returncode = process.returncode
+                    break
+                except subprocess.TimeoutExpired:
+                    first_communicate = False
+
+            if timed_out:
+                terminate_process_tree(process)
+                process.communicate()
+                returncode = process.returncode
+
+            tracker.drain(stream_path, final=True)
+            now = time.monotonic()
+            if timed_out:
+                progress_log.append(now - started_at, f"stopped: {timeout_reason}")
+                print(
+                    f"Codex step {step_label}: {timeout_reason}.\nRecent activity:\n{progress_log.tail()}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+            stderr_file.flush()
+            size = stderr_file.tell()
+            stderr_file.seek(max(0, size - (MAX_DIAGNOSTIC_CHARS * 4)))
+            stderr = stderr_file.read().decode("utf-8", errors="replace")
+
+    progress_tail = progress_log.tail()
+    progress_log.close()
+    return ProcessOutcome(
+        returncode,
+        "",
+        stderr,
+        timed_out=timed_out,
+        progress_tail=progress_tail,
+        timeout_reason=timeout_reason,
+        retryable=retryable,
+    )
 
 
 def process_diagnostic(outcome: ProcessOutcome, timeout_seconds: int) -> str | None:
     if outcome.launch_error:
         return _truncate(f"could not launch Codex: {outcome.launch_error}", MAX_DIAGNOSTIC_CHARS)
     if outcome.timed_out:
-        heading = f"Codex timed out after {timeout_seconds} seconds"
+        heading = outcome.timeout_reason or f"Codex timed out after {timeout_seconds} seconds"
     elif outcome.returncode != 0:
         heading = f"Codex exited with code {outcome.returncode}"
     else:
         return None
-    tail = _collapse_text(outcome.stderr[-MAX_DIAGNOSTIC_CHARS:])
-    if tail:
-        heading += f": {tail}"
-    return _truncate(heading, MAX_DIAGNOSTIC_CHARS)
+    parts = [_truncate(heading, 700)]
+    stderr_tail = _truncate_tail(_collapse_text(outcome.stderr), 1_000)
+    if stderr_tail:
+        parts.append("stderr tail: " + stderr_tail)
+    progress_tail = _truncate_tail(outcome.progress_tail, 2_200)
+    if progress_tail:
+        parts.append("Recent worker activity:\n" + progress_tail)
+    return "\n".join(parts)
+
+
+def _with_progress_context(message: str, progress_tail: str) -> str:
+    if not progress_tail:
+        return message
+    return message + "\nRecent worker activity:\n" + _truncate_tail(progress_tail, 2_200)
 
 
 def write_json(path: Path, value: Any, *, pretty: bool = True) -> None:
@@ -573,6 +921,8 @@ def dry_run_report(
     model: str | None,
     workspace: Path,
     skill_manifest: Path,
+    timeout_seconds: int,
+    timeout_checkpoint_seconds: int,
 ) -> dict[str, Any]:
     schema_placeholder = Path("<artifacts>/worker-result.schema.json")
     steps: list[dict[str, Any]] = []
@@ -592,6 +942,8 @@ def dry_run_report(
         "goal": plan.goal,
         "model": model or "Codex CLI configured default",
         "step_count": len(plan.steps),
+        "timeout_seconds": timeout_seconds,
+        "timeout_checkpoint_seconds": timeout_checkpoint_seconds,
         "recursion_guard": {
             "environment": {"CODEX_WORKFLOW_CHILD": "1", "CODEX_WORKFLOW_DEPTH": "1"},
             "skill_disabled": str(skill_manifest),
@@ -607,6 +959,7 @@ def run_workflow(
     model: str | None,
     workspace: Path,
     timeout_seconds: int,
+    timeout_checkpoint_seconds: int,
     retries: int,
     max_summary_chars: int,
     skill_manifest: Path,
@@ -662,13 +1015,16 @@ def run_workflow(
                 cwd=workspace,
                 env=child_environment(),
                 timeout_seconds=timeout_seconds,
+                timeout_checkpoint_seconds=timeout_checkpoint_seconds,
+                progress_path=attempt_dir / "progress.log",
+                step_label=step.id,
             )
             last_error = process_diagnostic(outcome, timeout_seconds)
             if last_error is None:
                 try:
                     last_result = read_worker_result(output_path)
                 except WorkflowError as exc:
-                    last_error = str(exc)
+                    last_error = _with_progress_context(str(exc), outcome.progress_tail)
                 else:
                     reported_files.update(last_result["files_changed"])
                     if last_result["status"] == SUCCESS_STATUS:
@@ -676,13 +1032,18 @@ def run_workflow(
                         completed_results[step.id] = last_result
                     else:
                         summary = _truncate(_collapse_text(str(last_result["summary"])), 1_000)
-                        last_error = f"worker returned status {last_result['status']}: {summary}"
+                        last_error = _with_progress_context(
+                            f"worker returned status {last_result['status']}: {summary}",
+                            outcome.progress_tail,
+                        )
             if last_error:
                 write_text(
                     attempt_dir / "diagnostic.txt",
                     _truncate(last_error, MAX_DIAGNOSTIC_CHARS) + "\n",
                 )
             if succeeded:
+                break
+            if not outcome.retryable:
                 break
         if succeeded and last_result is not None:
             step_reports.append(
@@ -728,6 +1089,12 @@ def parser() -> argparse.ArgumentParser:
         help="worker model (default: Codex CLI configured model; can also use CODEX_WORKFLOW_MODEL)",
     )
     result.add_argument("--timeout-seconds", type=int, default=1_800)
+    result.add_argument(
+        "--timeout-checkpoint-seconds",
+        type=int,
+        default=DEFAULT_TIMEOUT_CHECKPOINT_SECONDS,
+        help="inspect progress and active shell commands at each interval before the hard timeout",
+    )
     result.add_argument("--retries", type=int, choices=(0, 1), default=1)
     result.add_argument(
         "--max-summary-chars",
@@ -737,7 +1104,7 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument(
         "--artifacts-dir",
-        help="new directory in which to retain prompts, results, diagnostics, and report",
+        help="new directory in which to retain prompts, progress logs, results, diagnostics, and report",
     )
     result.add_argument(
         "--codex-bin",
@@ -799,6 +1166,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         model = _resolve_model(args.model)
         if args.timeout_seconds <= 0:
             raise WorkflowError("--timeout-seconds must be positive")
+        if args.timeout_checkpoint_seconds <= 0:
+            raise WorkflowError("--timeout-checkpoint-seconds must be positive")
         if args.max_summary_chars <= 0:
             raise WorkflowError("--max-summary-chars must be positive")
         skill_manifest = (Path(__file__).resolve().parents[1] / "SKILL.md").resolve()
@@ -812,6 +1181,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     model=model,
                     workspace=workspace,
                     skill_manifest=skill_manifest,
+                    timeout_seconds=args.timeout_seconds,
+                    timeout_checkpoint_seconds=args.timeout_checkpoint_seconds,
                 )
             )
             return 0
@@ -836,6 +1207,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     model=model,
                     workspace=workspace,
                     timeout_seconds=args.timeout_seconds,
+                    timeout_checkpoint_seconds=args.timeout_checkpoint_seconds,
                     retries=args.retries,
                     max_summary_chars=args.max_summary_chars,
                     skill_manifest=skill_manifest,

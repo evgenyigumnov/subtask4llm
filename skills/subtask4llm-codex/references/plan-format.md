@@ -75,3 +75,17 @@ python3 <skill-path>/scripts/run_workflow.py <plan.json> --workspace <repository
 On Windows PowerShell, use `py -3 <skill-path>\scripts\run_workflow.py <plan.json> --workspace <repository> --dry-run`. Add `--model <worker-model>` only when you want to override the Codex CLI configured model.
 
 The dry run displays the effective child command controls and step ordering. It does not contact a model.
+
+## Progress and timeouts
+
+Codex workers run with `codex exec --json`. The runner converts JSONL events
+into a bounded `progress.log` for each attempt. It prints the latest activity
+at 10-minute checkpoints and continues when there is no silent active shell
+command. A shell command with no update for 10 minutes is stopped immediately.
+The default hard maximum is 30 minutes per attempt, configurable with
+`--timeout-seconds`; the checkpoint interval defaults to 10 minutes and is
+configurable with `--timeout-checkpoint-seconds`. Timeout attempts are not
+retried. Timeout diagnostics include recent progress and the available stderr
+tail. `--artifacts-dir` retains the progress logs along with prompts, results,
+diagnostics, and the report; without it, only the final compact report is
+kept after the workflow ends.
