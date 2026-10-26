@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -107,13 +108,54 @@ class ActiveCommand:
     last_activity_at: float
 
 
+class LiveProgressLog:
+    """Write one flushed, human-readable activity log for an entire workflow run."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.started_at = time.monotonic()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            self.handle = os.fdopen(descriptor, "w", encoding="utf-8")
+        except OSError as exc:
+            raise WorkflowError(f"cannot create live progress log: {exc}") from exc
+
+    def append(self, summary: str) -> None:
+        summary = _collapse_text(summary)
+        if not summary:
+            return
+        elapsed = int(time.monotonic() - self.started_at)
+        self.handle.write(f"[+{elapsed:04d}s] {summary}\n")
+        self.handle.flush()
+
+    def close(self) -> None:
+        if not self.handle.closed:
+            self.handle.flush()
+            self.handle.close()
+
+    def __enter__(self) -> "LiveProgressLog":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+
 class ProgressLog:
     """Keep a bounded, human-readable tail of structured Codex progress events."""
 
-    def __init__(self, path: Path):
+    def __init__(
+        self,
+        path: Path,
+        *,
+        live_log: LiveProgressLog | None = None,
+        live_scope: str = "",
+    ):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self.handle = path.open("w", encoding="utf-8")
+        self.live_log = live_log
+        self.live_scope = live_scope
         self.last_summary = ""
 
     def append(self, elapsed_seconds: float, summary: str) -> None:
@@ -123,6 +165,9 @@ class ProgressLog:
         line = f"[+{int(elapsed_seconds):04d}s] {summary}"
         self.handle.write(line + "\n")
         self.handle.flush()
+        if self.live_log is not None:
+            prefix = f"{self.live_scope}: " if self.live_scope else ""
+            self.live_log.append(prefix + summary)
         self.last_summary = summary
         if self.handle.tell() > MAX_PROGRESS_LOG_CHARS:
             self.handle.close()
@@ -269,7 +314,19 @@ class ProgressTracker:
             state = "started" if event_type == "item.started" else "finished"
             return f"Codex web search {state}: {query}" if query else f"Codex web search {state}"
         if item_type == "file_change":
-            return f"Codex file change {event_type.removeprefix('item.')}"
+            changes = item.get("changes")
+            details: list[str] = []
+            if isinstance(changes, list):
+                for change in changes:
+                    if not isinstance(change, dict):
+                        continue
+                    path = _compact_event_text(change.get("path"), limit=180)
+                    kind = _compact_event_text(change.get("kind"), limit=40)
+                    if path:
+                        details.append(f"{kind} {path}" if kind else path)
+            detail = _compact_event_text("; ".join(details), limit=400)
+            suffix = f": {detail}" if detail else ""
+            return f"Codex file change {event_type.removeprefix('item.')}{suffix}"
         if item_type == "error":
             detail = _compact_event_text(item.get("message"), limit=500)
             return f"Codex worker error: {detail}" if detail else "Codex worker error"
@@ -751,11 +808,17 @@ def run_process(
     timeout_checkpoint_seconds: int,
     progress_path: Path,
     step_label: str,
+    attempt: int,
+    live_log: LiveProgressLog,
 ) -> ProcessOutcome:
     """Stream Codex JSONL events to a temporary file and diagnose quiet commands."""
     started_at = time.monotonic()
     next_checkpoint = timeout_checkpoint_seconds
-    progress_log = ProgressLog(progress_path)
+    progress_log = ProgressLog(
+        progress_path,
+        live_log=live_log,
+        live_scope=f"{step_label} attempt {attempt}",
+    )
     timeout_reason: str | None = None
     timed_out = False
     retryable = True
@@ -964,6 +1027,7 @@ def run_workflow(
     max_summary_chars: int,
     skill_manifest: Path,
     artifact_root: Path,
+    live_log: LiveProgressLog,
 ) -> dict[str, Any]:
     schema_path = artifact_root / "worker-result.schema.json"
     write_json(schema_path, WORKER_RESULT_SCHEMA)
@@ -973,7 +1037,9 @@ def run_workflow(
     failed = False
 
     for index, step in enumerate(plan.steps, start=1):
+        live_log.append(f"Step {index}/{len(plan.steps)}: {step.id} — {step.title}")
         if failed:
+            live_log.append(f"Step {step.id} not run because an earlier step failed")
             step_reports.append(
                 {
                     "id": step.id,
@@ -990,6 +1056,7 @@ def run_workflow(
         attempts_used = 0
         for attempt in range(1, retries + 2):
             attempts_used = attempt
+            live_log.append(f"Starting {step.id} attempt {attempt}/{retries + 1}")
             attempt_dir = artifact_root / f"{index:02d}-{step.id}" / f"attempt-{attempt}"
             prompt = build_prompt(
                 plan=plan,
@@ -1018,6 +1085,8 @@ def run_workflow(
                 timeout_checkpoint_seconds=timeout_checkpoint_seconds,
                 progress_path=attempt_dir / "progress.log",
                 step_label=step.id,
+                attempt=attempt,
+                live_log=live_log,
             )
             last_error = process_diagnostic(outcome, timeout_seconds)
             if last_error is None:
@@ -1037,15 +1106,24 @@ def run_workflow(
                             outcome.progress_tail,
                         )
             if last_error:
+                live_log.append(
+                    f"{step.id} attempt {attempt} failed: {_truncate(_collapse_text(last_error), 500)}"
+                )
                 write_text(
                     attempt_dir / "diagnostic.txt",
                     _truncate(last_error, MAX_DIAGNOSTIC_CHARS) + "\n",
+                )
+            elif last_result is not None:
+                live_log.append(
+                    f"{step.id} worker status {last_result['status']}: "
+                    f"{_truncate(_collapse_text(str(last_result['summary'])), 500)}"
                 )
             if succeeded:
                 break
             if not outcome.retryable:
                 break
         if succeeded and last_result is not None:
+            live_log.append(f"Step {step.id} completed")
             step_reports.append(
                 {
                     "id": step.id,
@@ -1056,6 +1134,7 @@ def run_workflow(
                 }
             )
         else:
+            live_log.append(f"Step {step.id} failed after {attempts_used} attempt(s)")
             failed = True
             report: dict[str, Any] = {
                 "id": step.id,
@@ -1068,8 +1147,9 @@ def run_workflow(
                 report["result"] = last_result
             step_reports.append(report)
 
+    status = "failed" if failed else "completed"
     return {
-        "status": "failed" if failed else "completed",
+        "status": status,
         "goal": plan.goal,
         "model": model,
         "steps": step_reports,
@@ -1107,6 +1187,10 @@ def parser() -> argparse.ArgumentParser:
         help="new directory in which to retain prompts, progress logs, results, diagnostics, and report",
     )
     result.add_argument(
+        "--live-log",
+        help="write flushed worker activity to this path (default: a per-workspace file in the system temp directory)",
+    )
+    result.add_argument(
         "--codex-bin",
         default=os.environ.get("CODEX_BIN", "codex"),
         help="Codex executable (also configurable with CODEX_BIN)",
@@ -1127,6 +1211,13 @@ def _resolve_workspace(raw_path: str) -> Path:
 def _resolve_model(cli_model: str | None) -> str | None:
     model = cli_model or os.environ.get("CODEX_WORKFLOW_MODEL")
     return model.strip() if model and model.strip() else None
+
+
+def _resolve_live_log(raw_path: str | None, workspace: Path) -> Path:
+    if raw_path:
+        return Path(raw_path).expanduser().resolve()
+    digest = hashlib.sha256(str(workspace).encode("utf-8")).hexdigest()[:24]
+    return Path(tempfile.gettempdir()) / f"subtask4llm-codex-{digest}-{os.getpid()}.log"
 
 
 def _validate_executable(codex_bin: str) -> str:
@@ -1199,29 +1290,40 @@ def main(argv: Sequence[str] | None = None) -> int:
         # Workers always use a fresh runtime directory outside the workspace. If
         # retention is requested, copy its bounded artifacts only after every
         # worker has stopped so a worker cannot alter the retained copy.
+        live_log_path = _resolve_live_log(args.live_log, workspace)
         with WorkspaceLock(workspace):
-            with tempfile.TemporaryDirectory(prefix="codex-sequential-") as temporary:
-                report = run_workflow(
-                    plan=plan,
-                    codex_bin=codex_bin,
-                    model=model,
-                    workspace=workspace,
-                    timeout_seconds=args.timeout_seconds,
-                    timeout_checkpoint_seconds=args.timeout_checkpoint_seconds,
-                    retries=args.retries,
-                    max_summary_chars=args.max_summary_chars,
-                    skill_manifest=skill_manifest,
-                    artifact_root=Path(temporary),
+            with LiveProgressLog(live_log_path) as live_log:
+                live_log.append(f"Workflow started: {plan.goal}")
+                print(
+                    f"Live worker activity log: {live_log_path}\n"
+                    f"Follow it with: tail -f {shlex.quote(str(live_log_path))}",
+                    file=sys.stderr,
+                    flush=True,
                 )
-                write_json(Path(temporary) / "report.json", report)
-                if artifact_destination is not None:
-                    try:
-                        shutil.copytree(temporary, artifact_destination)
-                    except OSError as exc:
-                        report["status"] = "failed"
-                        report["artifacts_error"] = _truncate(
-                            f"could not retain artifacts: {exc}", MAX_DIAGNOSTIC_CHARS
-                        )
+                with tempfile.TemporaryDirectory(prefix="codex-sequential-") as temporary:
+                    report = run_workflow(
+                        plan=plan,
+                        codex_bin=codex_bin,
+                        model=model,
+                        workspace=workspace,
+                        timeout_seconds=args.timeout_seconds,
+                        timeout_checkpoint_seconds=args.timeout_checkpoint_seconds,
+                        retries=args.retries,
+                        max_summary_chars=args.max_summary_chars,
+                        skill_manifest=skill_manifest,
+                        artifact_root=Path(temporary),
+                        live_log=live_log,
+                    )
+                    write_json(Path(temporary) / "report.json", report)
+                    if artifact_destination is not None:
+                        try:
+                            shutil.copytree(temporary, artifact_destination)
+                        except OSError as exc:
+                            report["status"] = "failed"
+                            report["artifacts_error"] = _truncate(
+                                f"could not retain artifacts: {exc}", MAX_DIAGNOSTIC_CHARS
+                            )
+                    live_log.append(f"Workflow {report['status']}")
         _print_compact_json(report)
         return 0 if report["status"] == "completed" else 1
     except WorkflowError as exc:

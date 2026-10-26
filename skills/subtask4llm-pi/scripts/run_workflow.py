@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -77,13 +78,54 @@ class ActiveCommand:
     last_activity_at: float
 
 
+class LiveProgressLog:
+    """Write one flushed, human-readable activity log for an entire workflow run."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.started_at = time.monotonic()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            self.handle = os.fdopen(descriptor, "w", encoding="utf-8")
+        except OSError as exc:
+            raise WorkflowError(f"cannot create live progress log: {exc}") from exc
+
+    def append(self, summary: str) -> None:
+        summary = _collapse_text(summary)
+        if not summary:
+            return
+        elapsed = int(time.monotonic() - self.started_at)
+        self.handle.write(f"[+{elapsed:04d}s] {summary}\n")
+        self.handle.flush()
+
+    def close(self) -> None:
+        if not self.handle.closed:
+            self.handle.flush()
+            self.handle.close()
+
+    def __enter__(self) -> "LiveProgressLog":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+
 class ProgressLog:
     """Keep a bounded, human-readable tail of structured Pi progress events."""
 
-    def __init__(self, path: Path):
+    def __init__(
+        self,
+        path: Path,
+        *,
+        live_log: LiveProgressLog | None = None,
+        live_scope: str = "",
+    ):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self.handle = path.open("w", encoding="utf-8")
+        self.live_log = live_log
+        self.live_scope = live_scope
         self.last_summary = ""
 
     def append(self, elapsed_seconds: float, summary: str) -> None:
@@ -93,6 +135,9 @@ class ProgressLog:
         line = f"[+{int(elapsed_seconds):04d}s] {summary}"
         self.handle.write(line + "\n")
         self.handle.flush()
+        if self.live_log is not None:
+            prefix = f"{self.live_scope}: " if self.live_scope else ""
+            self.live_log.append(prefix + summary)
         self.last_summary = summary
         if self.handle.tell() > MAX_PROGRESS_LOG_CHARS:
             self.handle.close()
@@ -290,8 +335,15 @@ class ProgressTracker:
             tool_id = str(event.get("toolCallId") or "")
             args = event.get("args")
             command = args.get("command") if isinstance(args, dict) else None
+            target = ""
+            if isinstance(args, dict):
+                for key in ("path", "file_path", "filePath", "filename"):
+                    candidate = args.get(key)
+                    if isinstance(candidate, str) and candidate.strip():
+                        target = candidate
+                        break
             if event_type == "tool_execution_start":
-                detail = _compact_event_text(command, limit=600)
+                detail = _compact_event_text(command or target, limit=600)
                 return f"Pi started {tool_name}: {detail}" if detail else f"Pi started {tool_name}"
             result = event.get("partialResult") if event_type == "tool_execution_update" else event.get("result")
             output = _pi_result_text(result, limit=400)
@@ -755,11 +807,17 @@ def run_process(
     timeout_checkpoint_seconds: int,
     progress_path: Path,
     step_label: str,
+    attempt: int,
+    live_log: LiveProgressLog,
 ) -> ProcessOutcome:
     """Stream Pi JSONL events to a temporary file and diagnose quiet commands."""
     started_at = time.monotonic()
     next_checkpoint = timeout_checkpoint_seconds
-    progress_log = ProgressLog(progress_path)
+    progress_log = ProgressLog(
+        progress_path,
+        live_log=live_log,
+        live_scope=f"{step_label} attempt {attempt}",
+    )
     timeout_reason: str | None = None
     timed_out = False
     retryable = True
@@ -976,6 +1034,7 @@ def run_workflow(
     retries: int,
     max_summary_chars: int,
     artifact_root: Path,
+    live_log: LiveProgressLog,
 ) -> dict[str, Any]:
     if retries not in {0, 1}:
         raise WorkflowError("retries must be 0 or 1")
@@ -991,7 +1050,9 @@ def run_workflow(
     failed = False
 
     for index, step in enumerate(plan.steps, start=1):
+        live_log.append(f"Step {index}/{len(plan.steps)}: {step.id} — {step.title}")
         if failed:
+            live_log.append(f"Step {step.id} not run because an earlier step failed")
             step_reports.append(
                 {
                     "id": step.id,
@@ -1008,6 +1069,7 @@ def run_workflow(
         attempts_used = 0
         for attempt in range(1, retries + 2):
             attempts_used = attempt
+            live_log.append(f"Starting {step.id} attempt {attempt}/{retries + 1}")
             attempt_dir = artifact_root / f"{index:02d}-{step.id}" / f"attempt-{attempt}"
             prompt = build_prompt(
                 plan=plan,
@@ -1027,6 +1089,8 @@ def run_workflow(
                 timeout_checkpoint_seconds=timeout_checkpoint_seconds,
                 progress_path=attempt_dir / "progress.log",
                 step_label=step.id,
+                attempt=attempt,
+                live_log=live_log,
             )
             last_error = process_diagnostic(outcome, timeout_seconds)
             if last_error is None:
@@ -1046,17 +1110,25 @@ def run_workflow(
                             outcome.progress_tail,
                         )
             if last_error:
+                live_log.append(
+                    f"{step.id} attempt {attempt} failed: {_truncate(_collapse_text(last_error), 500)}"
+                )
                 write_text(
                     attempt_dir / "diagnostic.txt",
                     _truncate(last_error, MAX_DIAGNOSTIC_CHARS) + "\n",
                 )
             elif last_result is not None:
+                live_log.append(
+                    f"{step.id} worker status {last_result['status']}: "
+                    f"{_truncate(_collapse_text(str(last_result['summary'])), 500)}"
+                )
                 write_json(attempt_dir / "result.json", last_result)
             if succeeded:
                 break
             if not outcome.retryable:
                 break
         if succeeded and last_result is not None:
+            live_log.append(f"Step {step.id} completed")
             step_reports.append(
                 {
                     "id": step.id,
@@ -1067,6 +1139,7 @@ def run_workflow(
                 }
             )
         else:
+            live_log.append(f"Step {step.id} failed after {attempts_used} attempt(s)")
             failed = True
             report: dict[str, Any] = {
                 "id": step.id,
@@ -1079,8 +1152,9 @@ def run_workflow(
                 report["result"] = last_result
             step_reports.append(report)
 
+    status = "failed" if failed else "completed"
     return {
-        "status": "failed" if failed else "completed",
+        "status": status,
         "goal": plan.goal,
         "model": model,
         "steps": step_reports,
@@ -1118,6 +1192,10 @@ def parser() -> argparse.ArgumentParser:
         help="new directory outside the workspace in which to retain prompts, progress logs, results, diagnostics, and report",
     )
     result.add_argument(
+        "--live-log",
+        help="write flushed worker activity to this path (default: a per-workspace file in the system temp directory)",
+    )
+    result.add_argument(
         "--pi-bin", default="pi", help="Pi executable (default: pi on PATH)"
     )
     result.add_argument(
@@ -1138,6 +1216,13 @@ def _resolve_model(cli_model: str | None) -> str | None:
         return cli_model.strip()
     env_model = os.environ.get("PI_WORKFLOW_MODEL", "")
     return env_model.strip() or None
+
+
+def _resolve_live_log(raw_path: str | None, workspace: Path) -> Path:
+    if raw_path:
+        return Path(raw_path).expanduser().resolve()
+    digest = hashlib.sha256(str(workspace).encode("utf-8")).hexdigest()[:24]
+    return Path(tempfile.gettempdir()) / f"subtask4llm-pi-{digest}-{os.getpid()}.log"
 
 
 def _validate_executable(pi_bin: str) -> str:
@@ -1233,25 +1318,36 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         # Keep transient prompts/progress/results outside the worker workspace. If the
         # caller opted in, retain them only after every Pi process has stopped.
+        live_log_path = _resolve_live_log(args.live_log, workspace)
         with WorkspaceLock(workspace):
-            with tempfile.TemporaryDirectory(prefix="pi-sequential-") as temporary:
-                report = run_workflow(
-                    plan=plan,
-                    pi_bin=pi_bin,
-                    model=model,
-                    workspace=workspace,
-                    timeout_seconds=args.timeout_seconds,
-                    timeout_checkpoint_seconds=args.timeout_checkpoint_seconds,
-                    retries=args.retries,
-                    max_summary_chars=args.max_summary_chars,
-                    artifact_root=Path(temporary),
+            with LiveProgressLog(live_log_path) as live_log:
+                live_log.append(f"Workflow started: {plan.goal}")
+                print(
+                    f"Live worker activity log: {live_log_path}\n"
+                    f"Follow it with: tail -f {shlex.quote(str(live_log_path))}",
+                    file=sys.stderr,
+                    flush=True,
                 )
-                write_json(Path(temporary) / "report.json", report)
-                if artifact_destination is not None:
-                    artifact_error = _retain_artifacts(Path(temporary), artifact_destination)
-                    if artifact_error:
-                        report["status"] = "failed"
-                        report["artifacts_error"] = artifact_error
+                with tempfile.TemporaryDirectory(prefix="pi-sequential-") as temporary:
+                    report = run_workflow(
+                        plan=plan,
+                        pi_bin=pi_bin,
+                        model=model,
+                        workspace=workspace,
+                        timeout_seconds=args.timeout_seconds,
+                        timeout_checkpoint_seconds=args.timeout_checkpoint_seconds,
+                        retries=args.retries,
+                        max_summary_chars=args.max_summary_chars,
+                        artifact_root=Path(temporary),
+                        live_log=live_log,
+                    )
+                    write_json(Path(temporary) / "report.json", report)
+                    if artifact_destination is not None:
+                        artifact_error = _retain_artifacts(Path(temporary), artifact_destination)
+                        if artifact_error:
+                            report["status"] = "failed"
+                            report["artifacts_error"] = artifact_error
+                    live_log.append(f"Workflow {report['status']}")
         _print_compact_json(report)
         return 0 if report["status"] == "completed" else 1
     except WorkflowError as exc:

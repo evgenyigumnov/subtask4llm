@@ -21,3 +21,7 @@ for the target path and command syntax.
 
 Each skill directory contains its own `SKILL.md` and any supporting files, so
 other agent-specific skills can be added and installed independently.
+
+Both workflow runners stream readable worker activity to a live log. At startup,
+the runner prints the log path and a `tail -f` command; use `--live-log <path>` to
+choose where the log is written.
