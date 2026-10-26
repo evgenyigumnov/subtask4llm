@@ -261,7 +261,6 @@ def build_command(
     codex_bin: str,
     model: str,
     workspace: Path,
-    sandbox: str,
     schema_path: Path,
     output_path: Path,
     skill_manifest: Path,
@@ -272,8 +271,7 @@ def build_command(
         "exec",
         "--model",
         model,
-        "--sandbox",
-        sandbox,
+        "--yolo",
         "--cd",
         str(workspace),
         "--ephemeral",
@@ -366,7 +364,7 @@ Hard constraints:
 - Do not launch Codex, another coding agent, a subagent, or this workflow orchestrator.
 - Do not unset or alter CODEX_WORKFLOW_CHILD or CODEX_WORKFLOW_DEPTH.
 - Preserve unrelated user changes; do not reset, revert, or overwrite work outside this step.
-- Inspect the workspace and verify your work as far as the sandbox permits.
+- Inspect the workspace and verify your work as far as the environment permits.
 - Your final response must be only the JSON object required by the supplied output schema.
 
 Project goal:
@@ -518,7 +516,6 @@ def dry_run_report(
     codex_bin: str,
     model: str,
     workspace: Path,
-    sandbox: str,
     skill_manifest: Path,
 ) -> dict[str, Any]:
     schema_placeholder = Path("<artifacts>/worker-result.schema.json")
@@ -529,7 +526,6 @@ def dry_run_report(
             codex_bin=codex_bin,
             model=model,
             workspace=workspace,
-            sandbox=sandbox,
             schema_path=schema_placeholder,
             output_path=output_placeholder,
             skill_manifest=skill_manifest,
@@ -553,7 +549,6 @@ def run_workflow(
     codex_bin: str,
     model: str,
     workspace: Path,
-    sandbox: str,
     timeout_seconds: int,
     retries: int,
     max_summary_chars: int,
@@ -600,7 +595,6 @@ def run_workflow(
                 codex_bin=codex_bin,
                 model=model,
                 workspace=workspace,
-                sandbox=sandbox,
                 schema_path=schema_path,
                 output_path=output_path,
                 skill_manifest=skill_manifest,
@@ -673,9 +667,6 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("plan", help="JSON plan path, or - to read it from stdin")
     result.add_argument("--workspace", default=".", help="shared worker workspace")
     result.add_argument("--model", help="worker model (or set CODEX_WORKFLOW_MODEL)")
-    result.add_argument(
-        "--sandbox", choices=("read-only", "workspace-write"), default="workspace-write"
-    )
     result.add_argument("--timeout-seconds", type=int, default=1_800)
     result.add_argument("--retries", type=int, choices=(0, 1), default=1)
     result.add_argument("--max-summary-chars", type=int, default=4_000)
@@ -747,7 +738,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     codex_bin=args.codex_bin,
                     model=model,
                     workspace=workspace,
-                    sandbox=args.sandbox,
                     skill_manifest=skill_manifest,
                 )
             )
@@ -772,7 +762,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     codex_bin=args.codex_bin,
                     model=model,
                     workspace=workspace,
-                    sandbox=args.sandbox,
                     timeout_seconds=args.timeout_seconds,
                     retries=args.retries,
                     max_summary_chars=args.max_summary_chars,
