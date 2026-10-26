@@ -59,6 +59,7 @@ The orchestrator accepts a UTF-8 JSON document with `version: 1`, one goal, and 
 - Put a dedicated verification step last when checks span multiple implementation steps.
 - Keep steps local and safely repeatable: a retry sees any partial files left by its first attempt. Perform non-idempotent external actions outside this workflow.
 - Do not place secrets, full chat history, or unrelated repository content in the plan. Workers can inspect the shared workspace directly.
+- Before launching the plan, show the user its goal and ordered step titles, each with a short description and dependencies. Then launch immediately without waiting for confirmation, so the user can interrupt or comment while it runs.
 
 Validate without starting a child session:
 

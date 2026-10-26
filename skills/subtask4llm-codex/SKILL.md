@@ -13,7 +13,8 @@ Use the current Codex as the planner and reviewer. Delegate implementation steps
 2. Inspect the repository and convert the authorized work into 2–10 concrete steps. Each step must have a bounded task, observable acceptance criteria, and only earlier steps as dependencies.
 3. Read [references/plan-format.md](references/plan-format.md), create a version 1 JSON plan in a temporary location, and validate it with `--dry-run` before execution.
 4. Use the current Codex session's model for workers by default, and pass it with `--model`. Choose a different worker model only when the user explicitly requests one or has stated a cost/quality preference that calls for it. Do not upgrade to a stronger model based on your own judgment. If the current model cannot be determined, ask instead of guessing. `CODEX_WORKFLOW_MODEL` may be used when the user has explicitly configured a worker model.
-5. Run the orchestrator from the target repository:
+5. Before launching any worker, show the user the plan in a concise, readable form in the conversation: the goal and the ordered list of step titles with a short description and dependencies. Then launch the workflow immediately; do not wait for confirmation. The user can interrupt it or send a follow-up comment while it runs.
+6. Run the orchestrator from the target repository:
 
    ```bash
    python3 <skill-path>/scripts/run_workflow.py <plan.json> \
@@ -23,8 +24,8 @@ Use the current Codex as the planner and reviewer. Delegate implementation steps
 
    Add `--artifacts-dir <directory>` only when persistent prompts and diagnostics are useful. Those artifacts can contain task details and dependency summaries, so treat them as potentially sensitive. Otherwise the orchestrator keeps only its compact final report.
    The orchestrator launches each worker with `--yolo`, as requested for this workflow.
-6. If a worker fails, let the orchestrator perform its single retry. After the retry fails, stop; do not improvise additional child runs.
-7. Review the final report and the actual workspace diff. Run or inspect proportionate final verification before claiming the user's task is complete. Report results, changed files, checks, and unresolved risks without reproducing child transcripts.
+7. If the user asks to stop while the workflow is running, interrupt it promptly. If the user sends a follow-up comment, acknowledge it and incorporate it into the remaining work where possible. If a worker fails, let the orchestrator perform its single retry. After the retry fails, stop; do not improvise additional child runs.
+8. Review the final report and the actual workspace diff. Run or inspect proportionate final verification before claiming the user's task is complete. Report results, changed files, checks, and unresolved risks without reproducing child transcripts.
 
 ## Invariants
 
