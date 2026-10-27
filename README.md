@@ -1,5 +1,23 @@
 # subtask4llm
 
+## Make small-context LLMs handle big coding tasks
+
+**The problem:** Coding agents accumulate context as they work: source code, tool outputs, reasoning, errors, and previous attempts. Eventually, the context window fills up, the model loses focus, and coding quality degrades.
+
+This is especially painful when running local LLMs with limited context windows (32K–64K tokens).
+
+**The solution:** Instead of forcing one LLM to complete a massive task in a single conversation, **subtask4llm splits the work into up to 10 smaller, sequential tasks, each executed by a fresh coding agent with its own clean context window.**
+
+The main agent acts as an orchestrator: it plans the work, delegates tasks, collects results, and verifies the outcome. Each worker receives only the project information and task-specific context it needs, including relevant results from previous tasks.
+
+**The key idea: Give each subtask a fresh context window instead of filling one context window with the entire project history.**
+
+This makes complex coding workflows more practical with smaller local models, reduces context pollution, and can also reduce token costs when using cloud APIs.
+
+Works with **Pi Coding Agent** and **OpenAI Codex CLI**.
+
+No complex infrastructure. No recursive agent spawning. Just a structured plan, isolated workers, and sequential execution.
+
 Agent-specific skills live in `skills/<skill-name>/`. The Codex skill is in
 `skills/subtask4llm-codex/` and can be installed on its own:
 
