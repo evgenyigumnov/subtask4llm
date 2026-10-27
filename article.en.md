@@ -1,42 +1,41 @@
-# 125 токенов в секунду на RTX 4070 Ti SUPER: как я заставил локальную LLM работать полноценным кодинг-агентом
+# 125 Tokens per Second on an RTX 4070 Ti SUPER: How I Got a Local LLM Working as a Full-Fledged Coding Agent
 
-По статистике, среди рядовых пользователей настольных компов самая распространенная видеокарта имеет 16 ГБ видеопамяти. По опросам GaugeDB, такие карты занимают 27,21% рынка. У меня как раз видеокарта NVIDIA GeForce RTX 4070 Ti SUPER с 16 ГБ видеопамяти GDDR6X, которая на текущий момент стоит 900$. До сего момента главной проблемой было то, что на видеокарте такого класса невозможно было запустить LLM-агента, который будет достаточно умным и достаточно быстрым. Если запускаешь умную модель типа Qwen 3.8 27B (Dense архитектура), то на выходе получаешь 10-20 токенов в секунду. А для комфортной работы кодинг-агента надо 100-150 токенов в секунду.
+Based on statistics, among regular desktop PC users, the most common graphics card has 16 GB of video memory. According to GaugeDB surveys, such cards make up 27.21% of the market. I happen to have an NVIDIA GeForce RTX 4070 Ti SUPER with 16 GB of GDDR6X video memory, which currently costs $900. Until now, the main problem was that it was impossible to run an LLM agent on a graphics card of this class that was smart enough and fast enough. If you run a smart model like Qwen 3.8 27B (Dense architecture), you get 10-20 tokens per second. And for comfortable work with a coding agent, you need 100-150 tokens per second.
 
 ```mermaid
 flowchart TB
-  gpu["RTX 4070 Ti SUPER: 16 ГБ видеопамяти"] --> dense["Qwen 3.8 27B Dense"]
-  dense --> current["10–20 токенов/с"]
-  target["Цель для комфортной работы: 100–150 токенов/с"] --> gap["Разрыв между скоростью модели и целью"]
+  gpu["RTX 4070 Ti SUPER: 16 GB of video memory"] --> dense["Qwen 3.8 27B Dense"]
+  dense --> current["10-20 tokens/s"]
+  target["Target for comfortable work: 100-150 tokens/s"] --> gap["Gap between model speed and target"]
   current --> gap
 ```
 
-Но недавно я наткнулся на 2 модели: Tiel-Coder-35B-A3B-GGUF-MTP (заточена на кодинг) и Cyber-Tiel-Coder-35B-A3B-GGUF-MTP (abliterated-модель без цензуры, которая не отказывается писать эксплойты и проводить активные взломы всего, что ни попросишь). И вот чем они ещё примечательны? Во-первых, в них используется технология MTP (Multi-Token Prediction), позволяющая LLM предсказывать сразу несколько следующих токенов вместо одного, что даёт прирост скорости инференса на 20%. Во-вторых, используется архитектура MoE (Mixture of Experts), которая позволяет получить качество большой модели, выполняя для каждого токена вычисления только с частью её параметров. Прирост скорости генерации токенов составляет +200-450%. В-третьих, это Sharp Template, то есть оптимизированный Chat Template (Jinja) с системным промптом, который заставляет LLM тратить меньше токенов на рассуждения и ответы, не теряя при этом необходимой информации. Он сокращает инференс на 59%, что в итоге ускоряет работу кодинг-агента в 2 раза.
+But recently I came across 2 models: Tiel-Coder-35B-A3B-GGUF-MTP (built for coding) and Cyber-Tiel-Coder-35B-A3B-GGUF-MTP (an uncensored abliterated model that doesn't refuse to write exploits or carry out active hacks on anything you ask it to). And what else is notable about them? First, they use MTP (Multi-Token Prediction), a technology that lets an LLM predict several next tokens at once instead of one, which increases inference speed by 20%. Second, they use the MoE (Mixture of Experts) architecture, which makes it possible to get the quality of a large model while performing computations for each token with only part of its parameters. Token generation speed increases by +200-450%. Third, there's Sharp Template, an optimized Chat Template (Jinja) with a system prompt that makes the LLM spend fewer tokens on reasoning and answers without losing necessary information. It cuts inference by 59%, which ultimately makes a coding agent work 2 times faster.
 
 ```mermaid
 flowchart TB
-  mtp["MTP: несколько токенов за шаг"] --> mtpGain["+20% к скорости инференса"]
-  moe["MoE: активна часть параметров"] --> moeGain["+200–450% к скорости генерации"]
-  sharp["Sharp Template: меньше токенов на рассуждения"] --> sharpGain["Инференс короче на 59%; агент работает в 2 раза быстрее"]
+  mtp["MTP: several tokens per step"] --> mtpGain["+20% inference speed"]
+  moe["MoE: only part of the parameters are active"] --> moeGain["+200-450% generation speed"]
+  sharp["Sharp Template: fewer tokens for reasoning"] --> sharpGain["Inference takes 59% less time; the agent works twice as fast"]
 ```
 
-По итогу я на своей видеокарте запускаю следующие версии этих моделей: Cyber-Tiel-Coder-35B-A3B-MTP-UD-Q2_K_XL.gguf и Tiel-Coder-35B-A3B-MTP-UD-Q2_K_XL.gguf, а параметры запуска выглядят вот так:
+So, on my graphics card, I run the following versions of these models: Cyber-Tiel-Coder-35B-A3B-MTP-UD-Q2_K_XL.gguf and Tiel-Coder-35B-A3B-MTP-UD-Q2_K_XL.gguf, and the launch parameters look like this:
 
-![Параметры запуска](https://github.com/evgenyigumnov/subtask4llm/blob/main/params.png?raw=true)
+![Launch parameters](https://github.com/evgenyigumnov/subtask4llm/blob/main/params.png?raw=true)
 
-В итоге получаю скорость 125 токенов в секунду!
+As a result, I get a speed of 125 tokens per second!
 
-![Скорость генерации](https://github.com/evgenyigumnov/subtask4llm/blob/main/proof.png?raw=true)
+![Generation speed](https://github.com/evgenyigumnov/subtask4llm/blob/main/proof.png?raw=true)
 
-Это очень хорошее начало, но если вы заметили, то контекстное окно всего 65535 токенов, и для агентной работы при кодинге этого маловато. По этой причине я использую 3 подхода.
+This is a very good start, but as you may have noticed, the context window is only 65535 tokens, which is a bit too small for agent-assisted coding. That's why I use 3 approaches.
 
-Во-первых, я не использую тяжёлые кодинг-агенты, такие как Codex или Claude Code, потому что они сразу из коробки при минимальном обращении съедают от 10 до 14 тыс. токенов на системный промпт и т. д. То есть 15-20% контекста отъедается сразу, и притом локальные модели легче теряют контекст, а такие большие системные инструкции ещё сильнее отвлекают их от задачи, которую формулирует пользователь. Я использую кодинг-агента Pi, для его работы требуется 1,5 тыс. токенов, и это в 10 раз меньше, чем у Codex или Claude Code, что ощутимо влияет на возможности и качество работы на локальной видеокарте пользователя. Вот конфигурационный файл от Pi, чтобы добавить эти 2 модели, которые будут крутиться у вас на видеокарте: ~/.pi/agent/models.json
-
+First, I don't use heavy coding agents, such as Codex or Claude Code, because right out of the box, with the slightest interaction, they consume 10 to 14 thousand tokens for the system prompt and so on. That is, 15-20% of the context is taken up immediately, and local models also lose context more easily, while such large system instructions distract them even more from the task the user describes. I use the Pi coding agent. It requires 1.5 thousand tokens to run, which is 10 times less than Codex or Claude Code, and this noticeably affects the capabilities and quality of work on the user's local GPU. Here's Pi's configuration file for adding these 2 models that will run on your GPU: ~/.pi/agent/models.json
 
 ```json
 {
   "providers": {
     "lmstudio": {
-      "baseUrl": "http://ВАШ_ЛОКАЛЬНЫЙ_IP:1234/v1",
+      "baseUrl": "http://YOUR_LOCAL_IP:1234/v1",
       "api": "openai-completions",
       "apiKey": "lmstudio",
       "models": [
@@ -58,85 +57,85 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-  large["Codex / Claude Code"] --> largePrompt["10–14 тыс. токенов на системный промпт"]
-  largePrompt --> contextShare["15–20% контекста занято сразу"]
-  pi["Pi"] --> piPrompt["Около 1,5 тыс. токенов"]
-  piPrompt --> spare["Больше контекста остаётся задаче"]
+  large["Codex / Claude Code"] --> largePrompt["10-14 thousand tokens for the system prompt"]
+  largePrompt --> contextShare["15-20% of the context is occupied right away"]
+  pi["Pi"] --> piPrompt["About 1.5 thousand tokens"]
+  piPrompt --> spare["More context is left for the task"]
 ```
 
-Во-вторых, я никогда не прошу кодинг-агента пытаться сделать крупное изменение в коде напрямую. Я начинаю новую сессию командой '/new' и прошу кодинг-агента написать файл plan.md, который будет описывать, что надо изменить в коде, чтобы реализовать поставленную мной задачу. Таким образом, мне хватает контекстного окна в 65535 токенов, так как, по сути, я задачу разбиваю на две фазы: планирование и реализацию. В итоге, если задача не слишком крупная, после создания plan.md я очищаю контекстное окно кодинг-агента командой '/new' и прошу его внести правки в код на основе plan.md и по завершении работы в plan.md зафиксировать результаты.
+Second, I never ask the coding agent to try to make a large code change directly. I start a new session with the "/new" command and ask the coding agent to write a plan.md file describing what needs to be changed in the code to implement the task I gave it. That way, the 65535-token context window is enough for me, since, essentially, I split the task into two phases: planning and implementation. Then, if the task isn't too large, after creating plan.md I clear the coding agent's context window with the "/new" command and ask it to make the code changes based on plan.md and record the results in plan.md when it's done.
 
 ```mermaid
 flowchart TB
-  task["Задача пользователя"] --> planSession["Новая сессия: изучить задачу"]
-  planSession --> plan["Создать plan.md"]
-  plan --> reset["/new: очистить контекст"]
-  reset --> implementation["Реализовать изменения по plan.md"]
-  implementation --> record["Зафиксировать результат в plan.md"]
+  task["User task"] --> planSession["New session: study the task"]
+  planSession --> plan["Create plan.md"]
+  plan --> reset["/new: clear context"]
+  reset --> implementation["Implement changes according to plan.md"]
+  implementation --> record["Record the result in plan.md"]
 ```
 
-В-третьих, для очень больших plan.md я использую свой SKILL под названием subtask4llm-pi, который разбивает задачу не более чем на 10 подзадач и выполняет их последовательно. При этом каждая подзадача запускается в отдельном экземпляре кодинг-агента, куда передаётся только то, что относится к подзадаче, а его контекстное окно размером 65535 токенов будет почти пустым. Результаты работы подзадач стекаются в главный экземпляр Pi и не переполняют его главное контекстное окно, которое занимается координацией, планированием и проверкой. Скилл вы можете установить командой "npx skills add https://github.com/evgenyigumnov/subtask4llm --skill subtask4llm-pi". Также есть версия для Codex - subtask4llm-codex. Кстати, если у кого есть желание добавить поддержку Claude или чем-то ещё помочь, то шлите пул-реквесты https://github.com/evgenyigumnov/subtask4llm
+Third, for very large plan.md files, I use my SKILL called subtask4llm-pi, which breaks a task into no more than 10 subtasks and runs them sequentially. Each subtask runs in a separate coding agent instance, which receives only what is relevant to that subtask, so its 65535-token context window is almost empty. The subtask results flow into the main Pi instance without overflowing its main context window, which handles coordination, planning, and checking. You can install the skill with the command "npx skills add https://github.com/evgenyigumnov/subtask4llm --skill subtask4llm-pi". There is also a version for Codex, subtask4llm-codex. By the way, if anyone wants to add support for Claude or help in some other way, send pull requests: https://github.com/evgenyigumnov/subtask4llm
 
 ```mermaid
 flowchart TB
-  plan["Большой plan.md"] --> split["Разбить максимум на 10 подзадач"]
-  split --> start["Главный Pi запускает следующую задачу"]
-  start --> worker["Отдельный экземпляр Pi с почти пустым контекстом"]
-  worker --> result["Результат подзадачи возвращается главному Pi"]
-  result --> review["Координация и проверка результата"]
-  review -->|"Есть следующая задача"| start
-  review -->|"Все задачи завершены"| done["Работа завершена"]
+  plan["Large plan.md"] --> split["Split into at most 10 subtasks"]
+  split --> start["Main Pi starts the next task"]
+  start --> worker["Separate Pi instance with an almost empty context"]
+  worker --> result["Subtask result is returned to the main Pi"]
+  result --> review["Coordinate and review the result"]
+  review -->|"Another task remains"| start
+  review -->|"All tasks are complete"| done["Work complete"]
 ```
 
-В-четвертых, я использую подход Роберта Мартина, автора книги "Чистый код", который недавно заявил, что перестал читать код, который генерируют кодинг-агенты. И этого он добился, загнав LLM в жесткие рамки. Используя эти рамки, можно нивелировать то, что используемые модели сильно ужаты до уровня UD-Q2_K_XL. То есть они допускают больше ошибок, чем 4-, 6- или 8-битные модели. И чтобы создать эти рамки, я предлагаю использовать AGENTS.md, который контролирует размер каждого создаваемого файла, заставляет писать юнит-тесты, четко формулирует декомпозицию и ответственность в коде, ну и в итоге требует прогона тестов. Так как на локальной видюхе мы не платим за каждый токен, то мы безболезненно переживем пару лишних итераций, когда модель увидит свои ошибки и исправит их. Вот базовый пример файла AGENTS.md для этого:
+Fourth, I use the approach of Robert Martin, author of "Clean Code", who recently said that he had stopped reading code generated by coding agents. He managed that by putting LLMs in a tight box. Using these constraints, you can offset the fact that the models in use are heavily compressed to the UD-Q2_K_XL level. That is, they make more mistakes than 4-, 6-, or 8-bit models. To create these constraints, I suggest using AGENTS.md, which controls the size of every file being created, makes you write unit tests, clearly spells out decomposition and responsibility in the code, and ultimately requires running the tests. Since we don't pay for every token on a local GPU, we can easily afford a couple of extra iterations while the model sees its mistakes and fixes them. Here is a basic example of an AGENTS.md file for this:
 
 ```
 # AGENTS.md
 
-## Правила написания кода
+## Code Writing Rules
 
-- Максимальный размер одного файла с кодом - 300-500 строк. Если файл становится больше, выполняй декомпозицию.
-- Главный принцип - одна связная ответственность на модуль.
-- Не жертвуй логической связностью или читаемостью кода ради соблюдения произвольных ограничений на количество строк.
-- Разделяй файлы исходя из их функционального назначения, а не только по количеству строк.
-- Все функции должны быть покрыты unit-тестами.
-- При добавлении или изменении функциональности, а также при исправлении ошибок обязательно добавляй соответствующие unit-тесты.
+- Maximum size of one code file: 300-500 lines. If a file gets bigger, break it down.
+- The main principle: one cohesive responsibility per module.
+- Don't sacrifice logical cohesion or code readability to comply with arbitrary line-count limits.
+- Split files based on their functional purpose, not just their line count.
+- All functions must be covered by unit tests.
+- When adding or changing functionality, or fixing bugs, always add the corresponding unit tests.
 
-## Проверка перед сдачей
+## Checks Before Submission
 
-- Все тесты и сборка должны проходить без ошибок и предупреждений.
-- Не ослабляй проверки и не удаляй тесты ради успешного прохождения тестирования.
+- All tests and the build must pass without errors or warnings.
+- Don't weaken checks or delete tests just to get them to pass.
 
-## Главное правило
+## Main Rule
 
-**Никогда не коммить изменения без прямой просьбы пользователя.**
+**Never commit changes without a direct request from the user.**
 ```
 
 ```mermaid
 flowchart TB
-  change["Изменить код"] --> rules["AGENTS.md задаёт рамки"]
-  rules --> design["Одна связная ответственность; декомпозиция"]
-  rules --> limit["Ориентир: 300–500 строк на файл"]
-  rules --> tests["Unit-тесты и сборка"]
-  tests --> pass{"Проверки проходят?"}
-  pass -->|"Нет"| fix["Исправить ошибки"]
+  change["Change the code"] --> rules["AGENTS.md sets the guardrails"]
+  rules --> design["One cohesive responsibility; decomposition"]
+  rules --> limit["Guideline: 300-500 lines per file"]
+  rules --> tests["Unit tests and build"]
+  tests --> pass{"Do the checks pass?"}
+  pass -->|"No"| fix["Fix the errors"]
   fix --> tests
-  pass -->|"Да"| review["Проверить результат"]
-  review --> commitRequest{"Есть прямая просьба коммитить?"}
-  commitRequest -->|"Да"| commit["Создать коммит"]
-  commitRequest -->|"Нет"| noCommit["Завершить без коммита"]
-  noCommit --> done["Работа завершена"]
+  pass -->|"Yes"| review["Review the result"]
+  review --> commitRequest{"Was there a direct request to commit?"}
+  commitRequest -->|"Yes"| commit["Create a commit"]
+  commitRequest -->|"No"| noCommit["Finish without a commit"]
+  noCommit --> done["Work complete"]
   commit --> done
 ```
 
-В итоге у нас произошёл синергетический эффект, или, можно сказать, даже эмерджентность. MTP + Квантование + MoE + AGENTS.md (Чистый код) + Sharp Template + Pi agent + subtask4llm skill + plan.md =
-рабочий процесс с кодинг-агентом, запущенный на вашей домашней видеокарте. Теперь ваши исходники под вашим контролем, и на них не наложат свои грязные лапы крупные корпорации! И ещё можно запустить abliterated-модель для White Hat-хакинга и не мучиться постоянными отказами от проприетарных моделей, когда пытаешься что-то там взломать.
+In the end, we got a synergistic effect, or you could even call it emergence. MTP + Quantization + MoE + AGENTS.md (Clean Code) + Sharp Template + Pi agent + subtask4llm skill + plan.md =
+a workflow with a coding agent, running on your home graphics card. Now your source code is under your control, and big corporations won't get their dirty paws on it! And you can also run an abliterated model for White Hat hacking without putting up with constant refusals from proprietary models when you're trying to hack something.
 
 ```mermaid
 flowchart TB
-  gpu["Домашняя видеокарта"] --> models["MTP + MoE + квантование + Sharp Template"]
-  models --> agent["Pi: компактный кодинг-агент"]
-  agent --> workflow["Планирование → реализация → подзадачи для больших изменений"]
-  workflow --> rules["AGENTS.md: структура, тесты и проверки"]
-  rules --> result["Локальный рабочий процесс под контролем пользователя"]
+  gpu["Home GPU"] --> models["MTP + MoE + quantization + Sharp Template"]
+  models --> agent["Pi: compact coding agent"]
+  agent --> workflow["Planning, then implementation, then subtasks for large changes"]
+  workflow --> rules["AGENTS.md: structure, tests, and checks"]
+  rules --> result["Local workflow under the user's control"]
 ```
