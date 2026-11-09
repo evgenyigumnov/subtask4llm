@@ -849,13 +849,11 @@ def run_process(
                         f"{stalled_command.label}"
                     )
                     timed_out = True
-                    retryable = False
                     break
 
                 if elapsed >= timeout_seconds:
                     timeout_reason = f"Pi worker timed out at its {timeout_seconds}s maximum runtime"
                     timed_out = True
-                    retryable = False
                     break
 
                 if elapsed >= next_checkpoint and next_checkpoint < timeout_seconds:
@@ -1053,7 +1051,11 @@ def run_workflow(
         attempts_used = 0
         for attempt in range(1, retries + 2):
             attempts_used = attempt
-            live_log.append(f"Starting {step.id} attempt {attempt}/{retries + 1}")
+            attempt_timeout_seconds = timeout_seconds * (2 if attempt > 1 else 1)
+            live_log.append(
+                f"Starting {step.id} attempt {attempt}/{retries + 1} "
+                f"(hard timeout {attempt_timeout_seconds}s)"
+            )
             attempt_dir = artifact_root / f"{index:02d}-{step.id}" / f"attempt-{attempt}"
             prompt = build_prompt(
                 plan=plan,
@@ -1070,13 +1072,13 @@ def run_workflow(
                 prompt,
                 cwd=workspace,
                 env=child_environment(),
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=attempt_timeout_seconds,
                 timeout_checkpoint_seconds=timeout_checkpoint_seconds,
                 step_label=step.id,
                 attempt=attempt,
                 live_log=live_log,
             )
-            last_error = process_diagnostic(outcome, timeout_seconds)
+            last_error = process_diagnostic(outcome, attempt_timeout_seconds)
             if last_error is None:
                 try:
                     last_result = parse_worker_result(outcome.stdout)

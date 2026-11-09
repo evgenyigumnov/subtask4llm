@@ -100,11 +100,13 @@ location. The default is a file in the system temporary directory. It prints
 the latest activity at 10-minute checkpoints and continues when there is no
 silent active shell command. A shell command with no update for 10 minutes is
 stopped immediately.
-The default hard maximum is 30 minutes per attempt, configurable with
-`--timeout-seconds`; the checkpoint interval defaults to 10 minutes and is
-configurable with `--timeout-checkpoint-seconds`. Timeout attempts are not
-retried. Timeout diagnostics include recent progress and the available stderr
-tail. `--artifacts-dir` retains prompts, results, diagnostics, and the report;
+The default hard maximum is 30 minutes for the first attempt, configurable with
+`--timeout-seconds`; if a retry is available, the second attempt gets twice
+that limit (60 minutes by default). The checkpoint interval defaults to 10
+minutes and is configurable with `--timeout-checkpoint-seconds`. Runtime
+timeouts and detected stalled commands can use the configured retry. Timeout
+diagnostics include recent progress and the available stderr tail.
+`--artifacts-dir` retains prompts, results, diagnostics, and the report;
 the workflow-wide activity log is controlled separately with `--live-log`.
 Without `--artifacts-dir`, the runner prints the compact final report to stdout
 and removes the temporary worker artifacts after the run ends.

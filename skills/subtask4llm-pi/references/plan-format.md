@@ -97,8 +97,9 @@ section of the prompt, truncated to the `--max-summary-chars` limit across all
 declared dependencies. Workers run sequentially in one workspace, so later
 steps can inspect changes already made there.
 
-The runner attempts each step once, plus the configured retry count, except
-that timeouts are not retried. A retry count of `1` is the maximum. By default,
+The runner attempts each step once, plus the configured retry count. Runtime
+timeouts and detected stalled commands can use an available retry. A retry
+count of `1` is the maximum. By default,
 after a step remains unsuccessful, the workflow stops and later steps are
 reported as not run. With `--continue-on-error`, later steps run in plan order
 even when a declared dependency failed; their prompts include the failed
@@ -139,8 +140,9 @@ updates, into one workflow-wide live log. It does not create per-attempt
 progress log files. Recent events are also held in memory for diagnostics. At
 each 10-minute checkpoint the runner prints the latest events and continues
 unless a shell command has produced no update for 10 minutes. Such a command is
-stopped immediately; otherwise the worker can continue until the 30-minute
-hard limit. Timeout attempts are not retried. Timeout diagnostics include the
+stopped immediately; otherwise the worker gets a 30-minute hard limit on its
+first attempt. If a retry is available, the second attempt gets twice the
+configured limit (60 minutes by default). Timeout diagnostics include the
 recent progress and available stderr tail.
 
 Pi CLI can run commands and modify files using the current user's permissions;
